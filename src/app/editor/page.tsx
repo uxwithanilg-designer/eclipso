@@ -1000,6 +1000,7 @@ export default function EditorPage() {
   const [leftWidth]                    = useState(260);
   const [razorLinePos, setRazorLinePos] = useState<number|null>(null);
   const [dragState, setDragState]       = useState<{clipId:number;startX:number;startStart:number}|null>(null);
+  const [dragOverTrackId, setDragOverTrackId] = useState<number|null>(null);
   const tlRef           = useRef<HTMLDivElement>(null);
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
   const historyRef      = useRef<Clip[][]>([]);
@@ -1073,22 +1074,48 @@ export default function EditorPage() {
 
   // ── DRAG: global mouse-up ends clip drag ──
   useEffect(()=>{
-    const onUp=()=>setDragState(null);
+    const onUp=()=>{ setDragState(null); setDragOverTrackId(null); };
     window.addEventListener('mouseup',onUp);
     return ()=>window.removeEventListener('mouseup',onUp);
   },[]);
 
-  // ── RAZOR line + MOVE tool drag ──
+  // ── RAZOR line + MOVE/CROSS-TRACK drag ──
   const handleTracksMouseMove=(e:React.MouseEvent<HTMLDivElement>)=>{
-    // –– MOVE: drag clip left/right ––
-    if(dragState&&tlRef.current){
+    // –– MOVE: drag clip (horizontal + cross-track vertical) ––
+    if(dragState&&tlRef.current&&tracksAreaRef.current){
       const dx=e.clientX-dragState.startX;
-      if(Math.abs(dx)>2){
+
+      // Horizontal position
+      const r=tlRef.current.getBoundingClientRect();
+      const deltaUnits=Math.abs(dx)>2?Math.round((dx/r.width)*100/(zoom*0.14)):0;
+      const newStart=Math.max(0,dragState.startStart+deltaUnits);
+
+      // Vertical: which track is cursor over?
+      const areaRect=tracksAreaRef.current.getBoundingClientRect();
+      let relY=e.clientY-areaRect.top;
+      let targetTrack:Track|null=null;
+      for(const t of tracks){
+        if(relY<t.height){ targetTrack=t; break; }
+        relY-=t.height;
+      }
+
+      // Find the dragged clip to check its type
+      const draggedClip=clips.find(c=>c.id===dragState.clipId);
+      if(!draggedClip) return;
+
+      // Determine valid target trackId
+      let newTrackId=draggedClip.trackId;
+      if(targetTrack&&targetTrack.type!=='caption'&&targetTrack.type===draggedClip.type){
+        newTrackId=targetTrack.id;
+      }
+
+      const moved=Math.abs(dx)>2||newTrackId!==draggedClip.trackId;
+      if(moved){
         dragMovedRef.current=true;
-        const r=tlRef.current.getBoundingClientRect();
-        const deltaUnits=Math.round((dx/r.width)*100/(zoom*0.14));
-        const newStart=Math.max(0,dragState.startStart+deltaUnits);
-        setClips(prev=>prev.map(c=>c.id===dragState.clipId?{...c,start:newStart}:c));
+        setDragOverTrackId(newTrackId);
+        setClips(prev=>prev.map(c=>
+          c.id===dragState.clipId?{...c,start:newStart,trackId:newTrackId}:c
+        ));
       }
       return;
     }
@@ -1375,7 +1402,24 @@ export default function EditorPage() {
                 {/* Tracks */}
                 <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
                   {tracks.map(track=>(
-                    <div key={track.id} style={{height:`${track.height}px`,borderBottom:'1px solid var(--border)',background:track.type==='video'?'rgba(124,92,255,0.015)':track.type==='caption'?'rgba(255,214,10,0.015)':'rgba(0,229,255,0.015)',position:'relative',cursor:activeTool==='razor'?'crosshair':'pointer',flexShrink:0}}>
+                    <div key={track.id} style={{
+                      height:`${track.height}px`,
+                      borderBottom:'1px solid var(--border)',
+                      background:
+                        dragOverTrackId===track.id&&dragState
+                          ? track.type==='video'?'rgba(124,92,255,0.09)'
+                            :track.type==='audio'?'rgba(0,229,255,0.09)'
+                            :'rgba(255,214,10,0.04)'
+                          : track.type==='video'?'rgba(124,92,255,0.015)'
+                            :track.type==='caption'?'rgba(255,214,10,0.015)'
+                            :'rgba(0,229,255,0.015)',
+                      outline: dragOverTrackId===track.id&&dragState
+                        ? `2px solid ${track.type==='video'?'rgba(124,92,255,0.45)':'rgba(0,229,255,0.45)'}` : 'none',
+                      position:'relative',
+                      cursor:activeTool==='razor'?'crosshair':dragState?'grabbing':'pointer',
+                      flexShrink:0,
+                      transition:'background 0.15s, outline 0.15s',
+                    }}>
                       {/* Beat grid */}
                       {Array.from({length:100},(_,i)=>(
                         <div key={i} style={{position:'absolute',left:`${i*zoom}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.015)'}}/>
