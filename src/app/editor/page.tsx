@@ -1,0 +1,1451 @@
+'use client';
+import { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
+
+// ═══════════════════════════════════════════════════
+//  TYPES
+// ═══════════════════════════════════════════════════
+type ToolId = 'select'|'track_fwd'|'ripple'|'rolling'|'rate'|'razor'|'slip'|'slide'|'hand'|'zoom'|'pen'|'text';
+type LeftTab = 'media'|'library'|'effects'|'transitions'|'color'|'sound'|'mixer'|'captions'|'ai'|'markers';
+type RightTab = 'effectcontrols'|'info';
+type Workspace = 'editing'|'color'|'audio'|'effects'|'all';
+type MobileTab = 'videos'|'music'|'titles'|null;
+type Track = { id:number; type:'video'|'audio'|'caption'; label:string; color:string; muted:boolean; solo:boolean; locked:boolean; height:number };
+type Clip  = { id:number; trackId:number; start:number; width:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number };
+type Marker = { id:number; time:number; label:string; color:string };
+
+// ═══════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════
+const TOOLS: {id:ToolId; icon:string; label:string; key:string; group:number}[] = [
+  {id:'select',    icon:'↖', label:'Selection Tool',        key:'V', group:0},
+  {id:'track_fwd', icon:'⇥', label:'Track Select Fwd',      key:'A', group:0},
+  {id:'ripple',    icon:'⟪', label:'Ripple Edit Tool',       key:'B', group:0},
+  {id:'rolling',   icon:'⟺', label:'Rolling Edit Tool',      key:'N', group:0},
+  {id:'rate',      icon:'⧖', label:'Rate Stretch Tool',      key:'R', group:0},
+  {id:'razor',     icon:'✂', label:'Razor Tool',             key:'C', group:1},
+  {id:'slip',      icon:'⇄', label:'Slip Tool',              key:'Y', group:1},
+  {id:'slide',     icon:'⇌', label:'Slide Tool',             key:'U', group:1},
+  {id:'hand',      icon:'✋', label:'Hand Tool',              key:'H', group:2},
+  {id:'zoom',      icon:'⊕', label:'Zoom Tool',              key:'Z', group:2},
+  {id:'pen',       icon:'✏', label:'Pen Tool',               key:'P', group:3},
+  {id:'text',      icon:'T', label:'Type Tool',              key:'T', group:3},
+];
+
+const LEFT_TABS: {id:LeftTab; icon:string; label:string; badge?:string}[] = [
+  {id:'media',       icon:'📁', label:'Media',           badge:'5'},
+  {id:'library',     icon:'🎵', label:'Library',         badge:'1K+'},
+  {id:'effects',     icon:'✨', label:'Effects'},
+  {id:'transitions', icon:'🔀', label:'Transitions'},
+  {id:'color',       icon:'🎨', label:'Lumetri Color'},
+  {id:'sound',       icon:'🔊', label:'Essential Sound'},
+  {id:'mixer',       icon:'🎚', label:'Audio Mixer'},
+  {id:'captions',    icon:'💬', label:'Captions'},
+  {id:'ai',          icon:'🤖', label:'AI Tools'},
+  {id:'markers',     icon:'📍', label:'Markers'},
+];
+
+const VIDEO_EFFECTS = [
+  {name:'Gaussian Blur',     cat:'Blur',       icon:'◐'},
+  {name:'Sharpen',           cat:'Blur',       icon:'◑'},
+  {name:'Crop',              cat:'Transform',  icon:'⊡'},
+  {name:'Transform',         cat:'Transform',  icon:'⊞'},
+  {name:'Corner Pin',        cat:'Distort',    icon:'⬡'},
+  {name:'Warp Stabilizer',   cat:'Distort',    icon:'〰'},
+  {name:'Brightness&Contrast',cat:'Color',     icon:'☀'},
+  {name:'Lumetri Color',     cat:'Color',      icon:'🎨'},
+  {name:'Black & White',     cat:'Color',      icon:'◫'},
+  {name:'Drop Shadow',       cat:'Stylize',    icon:'▣'},
+  {name:'Glow',              cat:'Stylize',    icon:'✦'},
+  {name:'Film Grain',        cat:'Stylize',    icon:'⁘'},
+  {name:'Chromatic Aberration',cat:'Stylize',  icon:'⊛'},
+  {name:'Vignette',          cat:'Stylize',    icon:'◉'},
+  {name:'Ultra Key',         cat:'Keying',     icon:'🟩'},
+  {name:'Motion Blur',       cat:'Time',       icon:'≋'},
+  {name:'Basic 3D',          cat:'3D',         icon:'◆'},
+  {name:'Noise Reduction',   cat:'Repair',     icon:'⊘'},
+];
+
+const AUDIO_EFFECTS = [
+  {name:'EQ / Parametric',  icon:'🎛'},{name:'Compressor',     icon:'📊'},
+  {name:'Reverb',           icon:'〰'},{name:'Delay / Echo',   icon:'⧫'},
+  {name:'Limiter',          icon:'⊓'},{name:'Noise Gate',     icon:'⊔'},
+  {name:'De-Noise',         icon:'⊘'},{name:'Chorus',         icon:'≋'},
+  {name:'Pitch Shift',      icon:'♪'},{name:'Stereo Expand',  icon:'⟺'},
+];
+
+const TRANSITION_LIST = [
+  {name:'Cross Dissolve',    cat:'Dissolve',   key:'Ctrl+D'},
+  {name:'Dip to Black',      cat:'Dissolve',   key:''},
+  {name:'Dip to White',      cat:'Dissolve',   key:''},
+  {name:'Film Dissolve',     cat:'Dissolve',   key:''},
+  {name:'Wipe Left→Right',   cat:'Wipe',       key:''},
+  {name:'Wipe Right→Left',   cat:'Wipe',       key:''},
+  {name:'Clock Wipe',        cat:'Wipe',       key:''},
+  {name:'Slide Left',        cat:'Slide',      key:''},
+  {name:'Slide Right',       cat:'Slide',      key:''},
+  {name:'Push Left',         cat:'Slide',      key:''},
+  {name:'Zoom In',           cat:'Zoom',       key:''},
+  {name:'Zoom Out',          cat:'Zoom',       key:''},
+  {name:'Spin',              cat:'Special',    key:''},
+  {name:'Flash',             cat:'Special',    key:''},
+  {name:'Morph Cut',         cat:'Special',    key:''},
+  {name:'Audio CrossFade',   cat:'Audio',      key:'Ctrl+Shift+D'},
+  {name:'Constant Power',    cat:'Audio',      key:''},
+];
+
+const LUT_PRESETS = ['Cinematic','Vintage','Cyberpunk','Teal & Orange','Bleach Bypass','Noir','Warm Sunset','Cold Arctic','Golden Hour','Neon Lights','Matte Fade'];
+
+const WORKSPACES: {id:Workspace; label:string}[] = [
+  {id:'editing',  label:'Editing'},
+  {id:'color',    label:'Color'},
+  {id:'audio',    label:'Audio'},
+  {id:'effects',  label:'Effects'},
+  {id:'all',      label:'All Panels'},
+];
+
+const MUSIC_TRACKS_DATA = [
+  {id:100, title:'Midnight Pulse', artist:'Kova',          dur:'2:34', bpm:128, accent:'#7C5CFF'},
+  {id:101, title:'Golden Hour',    artist:'Nyx Audio',     dur:'3:12', bpm:96,  accent:'#00E5FF'},
+  {id:102, title:'Neon Rain',      artist:'The Sound Lab', dur:'2:48', bpm:140, accent:'#FF3B82'},
+  {id:103, title:'Crystal Caves',  artist:'Aether',        dur:'4:02', bpm:85,  accent:'#00FF94'},
+  {id:104, title:'Urban Legends',  artist:'Drex',          dur:'3:33', bpm:110, accent:'#FF8C00'},
+  {id:105, title:'Deep Space',     artist:'Solara',        dur:'5:15', bpm:72,  accent:'#FFD60A'},
+];
+
+const CLIP_WAVE = [45,72,31,88,54,19,67,42,78,25,61,38,90,55,22,74,48,85,33,68,27,80,50,16,73,44,92,36,64,29,57,82,23,70,46,15,76,52,88,34,62,41,79,26,59,83,20,66,49,91,37,71,28,86,53,18,75,43,87,30];
+
+const COLOR_CONTROLS = [
+  {label:'Exposure',    min:-5,  max:5,  step:0.1, color:'#FFD60A', def:0},
+  {label:'Contrast',   min:-100,max:100,step:1,   color:'#FF8C00', def:0},
+  {label:'Highlights', min:-100,max:100,step:1,   color:'#FFFFFF', def:0},
+  {label:'Shadows',    min:-100,max:100,step:1,   color:'#7C5CFF', def:0},
+  {label:'Whites',     min:-100,max:100,step:1,   color:'#F0F0FF', def:0},
+  {label:'Blacks',     min:-100,max:100,step:1,   color:'#444466', def:0},
+  {label:'Saturation', min:0,   max:200,step:1,   color:'#00FF94', def:100},
+  {label:'Temperature',min:-100,max:100,step:1,   color:'#00E5FF', def:0},
+  {label:'Tint',       min:-100,max:100,step:1,   color:'#FF3B82', def:0},
+];
+
+// ═══════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════
+function initTracks(): Track[] {
+  return [
+    {id:1, type:'video',   label:'V3', color:'#5566EE', muted:false, solo:false, locked:false, height:48},
+    {id:2, type:'video',   label:'V2', color:'#7C5CFF', muted:false, solo:false, locked:false, height:48},
+    {id:3, type:'video',   label:'V1', color:'#9966FF', muted:false, solo:false, locked:false, height:52},
+    {id:7, type:'caption', label:'CT', color:'#FFD60A', muted:false, solo:false, locked:false, height:28},
+    {id:4, type:'audio',   label:'A1', color:'#00E5FF', muted:false, solo:false, locked:false, height:44},
+    {id:5, type:'audio',   label:'A2', color:'#00FF94', muted:false, solo:false, locked:false, height:44},
+    {id:6, type:'audio',   label:'A3', color:'#FF3B82', muted:false, solo:false, locked:false, height:36},
+  ];
+}
+
+function initClips(): Clip[] {
+  return [
+    {id:1,  trackId:3, start:0,   width:185, label:'Strike_the_H.mp4',  color:'#9966FF', type:'video'},
+    {id:2,  trackId:3, start:205, width:145, label:'Thunder_Ben.mp4',   color:'#9966FF', type:'video', speed:200},
+    {id:3,  trackId:3, start:370, width:105, label:'Thunder_at.mp4',    color:'#9966FF', type:'video', proxy:true},
+    {id:4,  trackId:2, start:80,  width:205, label:'Overlay.mp4',       color:'#7C5CFF', type:'video'},
+    {id:8,  trackId:1, start:150, width:120, label:'B-Roll_sky.mp4',    color:'#5566EE', type:'video'},
+    {id:5,  trackId:4, start:0,   width:475, label:'Thunder_Audio.wav', color:'#00E5FF', type:'audio'},
+    {id:6,  trackId:5, start:40,  width:390, label:'BG_Music.wav',      color:'#00FF94', type:'audio'},
+    {id:9,  trackId:5, start:430, width:120, label:'Midnight Pulse',    color:'#7C5CFF', type:'audio'},
+    {id:7,  trackId:6, start:0,   width:475, label:'Ambient.wav',       color:'#FF3B82', type:'audio'},
+  ];
+}
+
+function initMarkers(): Marker[] {
+  return [
+    {id:1, time:15,  label:'Intro End',    color:'#FFD60A'},
+    {id:2, time:38,  label:'Key Moment',   color:'#FF3B82'},
+    {id:3, time:60,  label:'Music Drop',   color:'#00E5FF'},
+  ];
+}
+
+// ═══════════════════════════════════════════════════
+//  MINI WAVEFORM
+// ═══════════════════════════════════════════════════
+function ClipWave({color, n=30}:{color:string; n?:number}) {
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:'1px',height:'100%',overflow:'hidden',padding:'3px 0'}}>
+      {Array.from({length:n},(_,i)=>(
+        <div key={i} style={{width:'2px',flexShrink:0,height:`${CLIP_WAVE[i%CLIP_WAVE.length]}%`,background:color,opacity:0.6,borderRadius:'1px'}}/>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+//  LEFT PANELS CONTENT
+// ═══════════════════════════════════════════════════
+
+// — MEDIA PANEL —
+function PanelMedia({onImport}:{onImport:(l:string)=>void}) {
+  const bins = ['All Media','Video','Audio','Images','B-Roll'];
+  const [bin,setBin] = useState('All Media');
+  const files = [
+    {n:'Strike_the_H.mp4',t:'Video',d:'2:01',c:'#9966FF'},{n:'Thunder_Ben.mp4',t:'Video',d:'0:31',c:'#7C5CFF'},
+    {n:'Thunder_at_.mp4', t:'Video',d:'0:29',c:'#9966FF'},{n:'Thunder_Audio.wav',t:'Audio',d:'2:24',c:'#00E5FF'},
+    {n:'Intro_Title.png', t:'Image',d:'',   c:'#00FF94'},{n:'B-Roll_sky.mp4',t:'Video',d:'1:12',c:'#5566EE'},
+  ];
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
+        <span style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700}}>PROJECT BINS</span>
+        <button style={{background:'var(--accent-dim)',border:'1px solid rgba(124,92,255,0.3)',color:'var(--accent)',fontSize:'10px',borderRadius:'5px',padding:'2px 8px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:600}}>+ Bin</button>
+      </div>
+      {/* Bins */}
+      <div style={{display:'flex',gap:'4px',flexWrap:'wrap',marginBottom:'10px'}}>
+        {bins.map(b=>(
+          <button key={b} onClick={()=>setBin(b)} style={{padding:'3px 8px',borderRadius:'6px',fontSize:'10px',fontFamily:'Syne,sans-serif',fontWeight:600,cursor:'pointer',background:bin===b?'var(--accent-dim)':'var(--bg-card)',border:`1px solid ${bin===b?'var(--accent)':'var(--border)'}`,color:bin===b?'var(--accent)':'var(--text-secondary)',transition:'all 0.15s'}}>{b}</button>
+        ))}
+      </div>
+      {/* Import drop zone */}
+      <div style={{border:'2px dashed var(--border)',borderRadius:'10px',padding:'12px',textAlign:'center',marginBottom:'10px',cursor:'pointer',transition:'all 0.2s'}}
+        onMouseEnter={e=>(e.currentTarget.style.borderColor='var(--accent)')}
+        onMouseLeave={e=>(e.currentTarget.style.borderColor='var(--border)')}
+      >
+        <div style={{fontSize:'18px',marginBottom:'4px'}}>+</div>
+        <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Drop or Ctrl+I to import</div>
+      </div>
+      {/* File list */}
+      <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
+        {files.map((f,i)=>(
+          <div key={i} onDoubleClick={()=>onImport(f.n)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor='var(--border-bright)'}
+            onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
+          >
+            <div style={{width:'32px',height:'24px',borderRadius:'4px',background:`${f.c}20`,border:`1px solid ${f.c}40`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <div style={{display:'flex',gap:'1px',alignItems:'center'}}>
+                {[3,5,4,6,4,3].map((h,k)=><div key={k} style={{width:'2px',height:`${h*3}px`,background:f.c,borderRadius:'1px',opacity:0.7}}/>)}
+              </div>
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:'11px',fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.n}</div>
+              <div style={{fontSize:'9px',color:'var(--text-secondary)'}}>{f.t}{f.d?` · ${f.d}`:''}</div>
+            </div>
+            <button onClick={()=>onImport(f.n)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px',flexShrink:0}}>▶</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// — LIBRARY PANEL —
+function PanelLibrary({onImport}:{onImport:(t:typeof MUSIC_TRACKS_DATA[0])=>void}) {
+  const [q,setQ]=useState('');
+  const filtered = MUSIC_TRACKS_DATA.filter(t=>t.title.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'10px'}}>MUSIC LIBRARY</div>
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Search 1000+ tracks..." style={{width:'100%',padding:'7px 10px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-primary)',fontSize:'11px',outline:'none',marginBottom:'8px'}}/>
+      <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+        {filtered.map(t=>(
+          <div key={t.id} style={{padding:'9px 10px',borderRadius:'9px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.background=`${t.accent}0e`;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--bg-secondary)';}}
+          >
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'5px'}}>
+              <div>
+                <div style={{fontSize:'12px',fontWeight:700,fontFamily:'Syne,sans-serif',color:t.accent}}>{t.title}</div>
+                <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>{t.artist} · {t.bpm} BPM · {t.dur}</div>
+              </div>
+              <button onClick={()=>onImport(t)} style={{background:t.accent,border:'none',color:'white',padding:'4px 8px',borderRadius:'5px',cursor:'pointer',fontSize:'10px',fontFamily:'Syne,sans-serif',fontWeight:700,flexShrink:0}}>+ Add</button>
+            </div>
+            <div style={{display:'flex',gap:'1px',height:'14px',alignItems:'center'}}>
+              {CLIP_WAVE.slice(0,30).map((h,k)=><div key={k} style={{width:'2px',background:t.accent,opacity:0.45,height:`${h*0.25+5}px`,borderRadius:'1px',maxHeight:'14px'}}/>)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <Link href="/library" style={{display:'block',textAlign:'center',marginTop:'10px',padding:'7px',borderRadius:'7px',background:'var(--cyan-dim)',border:'1px solid rgba(0,229,255,0.25)',color:'var(--cyan)',fontSize:'11px',textDecoration:'none',fontFamily:'Syne,sans-serif',fontWeight:600}}>
+        Browse Full Library →
+      </Link>
+    </div>
+  );
+}
+
+// — EFFECTS PANEL —
+function PanelEffects() {
+  const [q,setQ]=useState('');
+  const cats = [...new Set(VIDEO_EFFECTS.map(e=>e.cat))];
+  const filtered = VIDEO_EFFECTS.filter(e=>e.name.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div>
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Search effects..." style={{width:'100%',padding:'7px 10px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-primary)',fontSize:'11px',outline:'none',marginBottom:'10px'}}/>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'8px'}}>VIDEO EFFECTS</div>
+      {cats.map(cat=>{
+        const items = filtered.filter(e=>e.cat===cat);
+        if(!items.length) return null;
+        return (
+          <div key={cat} style={{marginBottom:'10px'}}>
+            <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,padding:'4px 0',borderBottom:'1px solid var(--border)',marginBottom:'5px'}}>{cat.toUpperCase()}</div>
+            <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+              {items.map(fx=>(
+                <div key={fx.name} style={{display:'flex',alignItems:'center',gap:'8px',padding:'5px 8px',borderRadius:'6px',cursor:'pointer',transition:'all 0.15s'}}
+                  onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';}}
+                  onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}
+                >
+                  <span style={{fontSize:'13px',width:'18px',textAlign:'center',flexShrink:0}}>{fx.icon}</span>
+                  <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{fx.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,margin:'10px 0 8px'}}>AUDIO EFFECTS</div>
+      <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+        {AUDIO_EFFECTS.map(fx=>(
+          <div key={fx.name} style={{display:'flex',alignItems:'center',gap:'8px',padding:'5px 8px',borderRadius:'6px',cursor:'pointer',transition:'all 0.15s'}}
+            onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}
+          >
+            <span style={{fontSize:'13px',width:'18px',textAlign:'center',flexShrink:0}}>{fx.icon}</span>
+            <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{fx.name}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// — TRANSITIONS PANEL —
+function PanelTransitions() {
+  const cats = [...new Set(TRANSITION_LIST.map(t=>t.cat))];
+  return (
+    <div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'10px'}}>VIDEO TRANSITIONS</div>
+      {cats.map(cat=>(
+        <div key={cat} style={{marginBottom:'10px'}}>
+          <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,padding:'4px 0',borderBottom:'1px solid var(--border)',marginBottom:'5px'}}>{cat.toUpperCase()}</div>
+          {TRANSITION_LIST.filter(t=>t.cat===cat).map(tr=>(
+            <div key={tr.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 8px',borderRadius:'6px',cursor:'pointer',transition:'all 0.15s'}}
+              onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';}}
+              onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}
+            >
+              <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{tr.name}</span>
+              {tr.key && <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'monospace',background:'var(--bg-card)',padding:'1px 5px',borderRadius:'3px',border:'1px solid var(--border)'}}>{tr.key}</span>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// — COLOR PANEL —
+function PanelColor() {
+  const [section,setSection] = useState<string[]>(['basic']);
+  const [lut,setLut] = useState('');
+  const [vals,setVals] = useState(COLOR_CONTROLS.map(c=>c.def));
+  const toggle = (s:string) => setSection(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s]);
+
+  const SectionHeader = ({id,label}:{id:string;label:string}) => (
+    <div onClick={()=>toggle(id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid var(--border)',cursor:'pointer',marginBottom:'6px'}}>
+      <span style={{fontSize:'10px',letterSpacing:'2px',color:section.includes(id)?'var(--accent)':'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700}}>{label}</span>
+      <span style={{color:'var(--text-muted)',fontSize:'10px'}}>{section.includes(id)?'▲':'▼'}</span>
+    </div>
+  );
+
+  return (
+    <div>
+      {/* BASIC CORRECTION */}
+      <SectionHeader id="basic" label="BASIC CORRECTION"/>
+      {section.includes('basic') && (
+        <div style={{marginBottom:'12px'}}>
+          {COLOR_CONTROLS.map((c,i)=>(
+            <div key={c.label} style={{marginBottom:'9px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'3px'}}>
+                <span style={{fontSize:'11px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>{c.label}</span>
+                <span style={{fontSize:'11px',color:c.color,fontFamily:'monospace'}}>{vals[i]>0?'+':''}{vals[i]}</span>
+              </div>
+              <input type="range" min={c.min} max={c.max} step={c.step} value={vals[i]} onChange={e=>{const n=[...vals];n[i]=Number(e.target.value);setVals(n);}} style={{width:'100%',accentColor:c.color,height:'3px',cursor:'pointer'}}/>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* CREATIVE / LUTS */}
+      <SectionHeader id="creative" label="CREATIVE (LUTs)"/>
+      {section.includes('creative') && (
+        <div style={{marginBottom:'12px'}}>
+          <div style={{display:'flex',flexWrap:'wrap',gap:'4px',marginBottom:'8px'}}>
+            {LUT_PRESETS.map(g=>(
+              <button key={g} onClick={()=>setLut(p=>p===g?'':g)} style={{padding:'3px 8px',borderRadius:'5px',fontSize:'10px',fontFamily:'Syne,sans-serif',cursor:'pointer',background:lut===g?'var(--accent-dim)':'var(--bg-secondary)',border:`1px solid ${lut===g?'var(--accent)':'var(--border)'}`,color:lut===g?'var(--accent)':'var(--text-secondary)',transition:'all 0.15s'}}>{g}</button>
+            ))}
+          </div>
+          <div style={{marginBottom:'6px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'3px'}}><span style={{fontSize:'11px',color:'var(--text-secondary)'}}>Intensity</span><span style={{fontSize:'11px',color:'var(--accent)',fontFamily:'monospace'}}>100%</span></div>
+            <input type="range" min={0} max={100} defaultValue={100} style={{width:'100%',accentColor:'var(--accent)',height:'3px'}}/>
+          </div>
+          <div>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'3px'}}><span style={{fontSize:'11px',color:'var(--text-secondary)'}}>Faded Film</span><span style={{fontSize:'11px',color:'#888899',fontFamily:'monospace'}}>0</span></div>
+            <input type="range" min={0} max={100} defaultValue={0} style={{width:'100%',accentColor:'#888899',height:'3px'}}/>
+          </div>
+        </div>
+      )}
+      {/* CURVES */}
+      <SectionHeader id="curves" label="CURVES"/>
+      {section.includes('curves') && (
+        <div style={{marginBottom:'12px'}}>
+          <div style={{width:'100%',height:'120px',background:'#0A0A0E',border:'1px solid var(--border)',borderRadius:'8px',position:'relative',overflow:'hidden',cursor:'crosshair',marginBottom:'6px'}}>
+            {/* Grid lines */}
+            {[25,50,75].map(p=>(
+              <div key={p}>
+                <div style={{position:'absolute',left:`${p}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.04)'}}/>
+                <div style={{position:'absolute',top:`${p}%`,left:0,right:0,height:'1px',background:'rgba(255,255,255,0.04)'}}/>
+              </div>
+            ))}
+            {/* Default diagonal line */}
+            <svg width="100%" height="100%" style={{position:'absolute',inset:0}}>
+              <line x1="0" y1="100%" x2="100%" y2="0" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5"/>
+            </svg>
+            <div style={{position:'absolute',bottom:'6px',left:'50%',transform:'translateX(-50%)',fontSize:'9px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif'}}>Click to add points</div>
+          </div>
+          <div style={{display:'flex',gap:'4px'}}>
+            {['M','R','G','B'].map((ch,i)=>(<button key={ch} style={{flex:1,padding:'3px',borderRadius:'4px',border:'1px solid var(--border)',background:'var(--bg-secondary)',color:['var(--text-secondary)','#FF5555','#55FF55','#5599FF'][i],fontSize:'10px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:700}}>{ch}</button>))}
+          </div>
+        </div>
+      )}
+      {/* COLOR WHEELS */}
+      <SectionHeader id="wheels" label="COLOR WHEELS"/>
+      {section.includes('wheels') && (
+        <div style={{marginBottom:'12px'}}>
+          <div style={{display:'flex',gap:'8px',justifyContent:'space-between'}}>
+            {['Shadows','Midtones','Highlights'].map((w,i)=>(
+              <div key={w} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'4px'}}>
+                <div style={{width:'56px',height:'56px',borderRadius:'50%',border:'2px solid var(--border)',background:'conic-gradient(#FF3B82,#FFD60A,#00FF94,#00E5FF,#7C5CFF,#FF3B82)',position:'relative',cursor:'crosshair',overflow:'hidden'}}>
+                  <div style={{position:'absolute',inset:0,background:'radial-gradient(circle,rgba(0,0,0,0.7),transparent)'}}/>
+                  <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                    <div style={{width:'6px',height:'6px',borderRadius:'50%',background:'white',boxShadow:'0 0 4px rgba(0,0,0,0.8)'}}/>
+                  </div>
+                </div>
+                <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif'}}>{w}</span>
+                <input type="range" min={-1} max={1} step={0.01} defaultValue={0} style={{width:'100%',accentColor:['#7C5CFF','#888899','#FFFFFF'][i],height:'3px'}}/>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* VIGNETTE */}
+      <SectionHeader id="vignette" label="VIGNETTE"/>
+      {section.includes('vignette') && (
+        <div style={{marginBottom:'12px'}}>
+          {[{l:'Amount',def:0},{l:'Midpoint',def:50},{l:'Feather',def:50}].map(c=>(
+            <div key={c.l} style={{marginBottom:'8px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'3px'}}><span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{c.l}</span><span style={{fontSize:'11px',color:'var(--text-secondary)',fontFamily:'monospace'}}>{c.def}</span></div>
+              <input type="range" min={-100} max={100} defaultValue={c.def} style={{width:'100%',accentColor:'var(--text-muted)',height:'3px'}}/>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// — ESSENTIAL SOUND PANEL —
+function PanelSound() {
+  const [type,setType] = useState<'dialogue'|'music'|'sfx'|'ambience'>('dialogue');
+  const [ducking,setDucking] = useState(false);
+  return (
+    <div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'10px'}}>ESSENTIAL SOUND</div>
+      <div style={{display:'flex',gap:'3px',marginBottom:'14px'}}>
+        {(['dialogue','music','sfx','ambience'] as const).map(t=>(
+          <button key={t} onClick={()=>setType(t)} style={{flex:1,padding:'5px 2px',borderRadius:'6px',border:'none',cursor:'pointer',background:type===t?'var(--accent)':'var(--bg-secondary)',color:type===t?'white':'var(--text-secondary)',fontSize:'9px',fontFamily:'Syne,sans-serif',fontWeight:700,letterSpacing:'0.3px',textTransform:'capitalize',transition:'all 0.15s'}}>
+            {t.charAt(0).toUpperCase()+t.slice(1,type===t?99:4)+(type!==t&&t.length>4?'.':'')}
+          </button>
+        ))}
+      </div>
+
+      {type==='dialogue' && (
+        <div>
+          <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'6px',borderBottom:'1px solid var(--border)',paddingBottom:'4px'}}>REPAIR</div>
+          {['Reduce Noise','Reduce Reverb','De-Hum','De-Click'].map(f=>(
+            <div key={f} style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+              <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{f}</span>
+              <input type="range" min={0} max={100} defaultValue={0} style={{width:'60px',accentColor:'var(--cyan)',height:'3px'}}/>
+            </div>
+          ))}
+          <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,margin:'10px 0 6px',borderBottom:'1px solid var(--border)',paddingBottom:'4px'}}>ENHANCE SPEECH (AI)</div>
+          <button style={{width:'100%',padding:'8px',borderRadius:'8px',background:'linear-gradient(135deg,var(--accent-dim),var(--cyan-dim))',border:'1px solid rgba(124,92,255,0.3)',color:'var(--accent)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'8px'}}>🤖 Enhance Speech</button>
+          <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,margin:'10px 0 6px',borderBottom:'1px solid var(--border)',paddingBottom:'4px'}}>LOUDNESS</div>
+          <button style={{width:'100%',padding:'7px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:600}}>⊙ Auto-Match Loudness</button>
+        </div>
+      )}
+
+      {type==='music' && (
+        <div>
+          <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'6px',borderBottom:'1px solid var(--border)',paddingBottom:'4px'}}>AUTO-DUCKING</div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+            <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>Enable Ducking</span>
+            <button onClick={()=>setDucking(p=>!p)} style={{width:'36px',height:'20px',borderRadius:'10px',border:'none',background:ducking?'var(--accent)':'var(--border)',cursor:'pointer',position:'relative',transition:'all 0.2s'}}>
+              <div style={{position:'absolute',top:'2px',left:ducking?'18px':'2px',width:'16px',height:'16px',borderRadius:'50%',background:'white',transition:'all 0.2s',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}/>
+            </button>
+          </div>
+          {ducking && (
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'3px'}}><span style={{fontSize:'11px',color:'var(--text-secondary)'}}>Duck Amount</span><span style={{fontSize:'11px',color:'var(--accent)',fontFamily:'monospace'}}>-12 dB</span></div>
+              <input type="range" min={-30} max={-3} defaultValue={-12} style={{width:'100%',accentColor:'var(--accent)',height:'3px',marginBottom:'8px'}}/>
+              <button style={{width:'100%',padding:'7px',borderRadius:'7px',background:'var(--accent-dim)',border:'1px solid rgba(124,92,255,0.3)',color:'var(--accent)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:700}}>🤖 Generate Keyframes</button>
+            </div>
+          )}
+          <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,margin:'10px 0 6px',borderBottom:'1px solid var(--border)',paddingBottom:'4px'}}>AI REMIX TOOL</div>
+          <button style={{width:'100%',padding:'8px',borderRadius:'8px',background:'linear-gradient(135deg,var(--cyan-dim),rgba(0,255,148,0.1))',border:'1px solid rgba(0,229,255,0.25)',color:'var(--cyan)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:700}}>🎵 Remix to Duration</button>
+        </div>
+      )}
+
+      {(type==='sfx'||type==='ambience') && (
+        <div>
+          {['Reverb','Stereo Width'].map(f=>(
+            <div key={f} style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+              <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{f}</span>
+              <input type="range" min={0} max={100} defaultValue={0} style={{width:'60px',accentColor:'var(--pink)',height:'3px'}}/>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// — AUDIO MIXER —
+function PanelMixer() {
+  const tracks = [
+    {label:'A1',color:'#00E5FF'},{label:'A2',color:'#00FF94'},{label:'A3',color:'#FF3B82'},{label:'MST',color:'#FFD60A'},
+  ];
+  return (
+    <div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'12px'}}>AUDIO MIXER</div>
+      <div style={{display:'flex',gap:'6px'}}>
+        {tracks.map(t=>(
+          <div key={t.label} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'6px',background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:'8px',padding:'8px 4px'}}>
+            <span style={{fontSize:'10px',fontFamily:'Syne,sans-serif',fontWeight:700,color:t.color}}>{t.label}</span>
+            {/* VU meter */}
+            <div style={{width:'12px',height:'80px',background:'var(--bg-card)',borderRadius:'3px',overflow:'hidden',position:'relative',border:'1px solid var(--border)'}}>
+              <div style={{position:'absolute',bottom:0,left:0,right:0,height:'65%',background:`linear-gradient(to top,${t.color},${t.color}88,#FFD60A33)`,transition:'height 0.1s'}}/>
+              {[0,25,50,75].map(p=>(
+                <div key={p} style={{position:'absolute',left:0,right:0,bottom:`${p}%`,height:'1px',background:'var(--bg-primary)',opacity:0.5}}/>
+              ))}
+            </div>
+            {/* Volume fader */}
+            <input type="range" min={0} max={100} defaultValue={t.label==='MST'?85:75} style={{width:'70px',accentColor:t.color,height:'3px',cursor:'pointer',transform:'rotate(-90deg)',transformOrigin:'center',margin:'24px -24px'}}/>
+            <div style={{marginTop:'24px',fontSize:'9px',color:'var(--text-secondary)',fontFamily:'monospace'}}>0dB</div>
+            <div style={{display:'flex',gap:'3px'}}>
+              <button style={{width:'18px',height:'14px',borderRadius:'2px',border:'none',cursor:'pointer',fontSize:'7px',background:'var(--bg-card)',color:'var(--text-muted)',fontWeight:700}}>M</button>
+              <button style={{width:'18px',height:'14px',borderRadius:'2px',border:'none',cursor:'pointer',fontSize:'7px',background:'var(--bg-card)',color:'var(--text-muted)',fontWeight:700}}>S</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// — CAPTIONS —
+function PanelCaptions() {
+  const lines = [
+    {t:'00:00:02',text:'The hunt begins with a bang'},
+    {t:'00:00:05',text:'As the storm approaches...'},
+    {t:'00:00:09',text:'Nothing can stop what\'s coming'},
+    {t:'00:00:14',text:'Strike the heavens'},
+  ];
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
+        <span style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700}}>TRANSCRIPTION</span>
+        <div style={{display:'flex',gap:'4px'}}>
+          <button style={{background:'linear-gradient(135deg,var(--accent-dim),var(--cyan-dim))',border:'1px solid rgba(124,92,255,0.3)',color:'var(--accent)',fontSize:'9px',borderRadius:'5px',padding:'3px 7px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:700}}>🤖 Transcribe</button>
+        </div>
+      </div>
+      <input placeholder="🔍 Search transcript..." style={{width:'100%',padding:'6px 10px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-primary)',fontSize:'11px',outline:'none',marginBottom:'8px'}}/>
+      <div style={{display:'flex',flexDirection:'column',gap:'4px',marginBottom:'12px'}}>
+        {lines.map((l,i)=>(
+          <div key={i} style={{padding:'7px 8px',borderRadius:'6px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent)'}
+            onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
+          >
+            <div style={{fontSize:'9px',color:'var(--accent)',fontFamily:'monospace',marginBottom:'2px'}}>{l.t}</div>
+            <div style={{fontSize:'11px',color:'var(--text-primary)',lineHeight:1.4}}>{l.text}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'8px'}}>FILLER WORDS</div>
+      <button style={{width:'100%',padding:'7px',borderRadius:'7px',background:'var(--pink-dim)',border:'1px solid rgba(255,59,130,0.25)',color:'var(--pink)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'6px'}}>🤖 Delete All Fillers (umm, uh, like…)</button>
+      <button style={{width:'100%',padding:'7px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:600}}>Export SRT File</button>
+    </div>
+  );
+}
+
+// — AI TOOLS —
+function PanelAI() {
+  const tools = [
+    {name:'Auto Reframe',    desc:'9:16, 1:1, 4:5 aspect ratios',   icon:'📐', color:'#7C5CFF'},
+    {name:'Scene Detection', desc:'Auto-split at scene changes',     icon:'🎬', color:'#00E5FF'},
+    {name:'Enhance Speech',  desc:'Studio quality from any mic',     icon:'🎙', color:'#00FF94'},
+    {name:'Remix Tool',      desc:'Smart music duration trimming',   icon:'🎵', color:'#FF8C00'},
+    {name:'AI Color Match',  desc:'Match look between clips',        icon:'🎨', color:'#FF3B82'},
+    {name:'Auto-Duck Music', desc:'Lower music during dialogue',     icon:'🔊', color:'#FFD60A'},
+    {name:'Frame Freeze',    desc:'Insert still frame segment',      icon:'⏸', color:'#7C5CFF'},
+    {name:'Proxy Generate',  desc:'Low-res proxies for speed',       icon:'⚡', color:'#00E5FF'},
+  ];
+  return (
+    <div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'10px'}}>AI TOOLS</div>
+      <div style={{background:'linear-gradient(135deg,var(--accent-dim),var(--cyan-dim))',border:'1px solid rgba(124,92,255,0.2)',borderRadius:'10px',padding:'10px',marginBottom:'12px',textAlign:'center'}}>
+        <div style={{fontSize:'18px',marginBottom:'4px'}}>🤖</div>
+        <div style={{fontSize:'11px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>AI Features Ready</div>
+        <div style={{fontSize:'10px',color:'var(--text-secondary)',marginTop:'2px'}}>Powered by Eclipso AI Engine</div>
+      </div>
+      <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+        {tools.map(t=>(
+          <div key={t.name} style={{display:'flex',alignItems:'center',gap:'10px',padding:'8px 10px',borderRadius:'8px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color;e.currentTarget.style.background=`${t.color}0d`;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--bg-secondary)';}}
+          >
+            <span style={{fontSize:'18px',flexShrink:0}}>{t.icon}</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:'11px',fontWeight:700,fontFamily:'Syne,sans-serif',color:t.color}}>{t.name}</div>
+              <div style={{fontSize:'9px',color:'var(--text-secondary)'}}>{t.desc}</div>
+            </div>
+            <span style={{fontSize:'10px',color:'var(--text-muted)',flexShrink:0}}>▶</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// — MARKERS PANEL —
+function PanelMarkers({markers,onJump}:{markers:Marker[];onJump:(t:number)=>void}) {
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
+        <span style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700}}>MARKERS</span>
+        <button style={{background:'var(--accent-dim)',border:'1px solid rgba(124,92,255,0.3)',color:'var(--accent)',fontSize:'10px',borderRadius:'5px',padding:'2px 8px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:600}}>+ Add (M)</button>
+      </div>
+      <div style={{display:'flex',flexDirection:'column',gap:'5px',marginBottom:'14px'}}>
+        {markers.map(m=>(
+          <div key={m.id} onClick={()=>onJump(m.time)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor=m.color}
+            onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
+          >
+            <div style={{width:'10px',height:'10px',borderRadius:'50%',background:m.color,flexShrink:0}}/>
+            <div style={{flex:1}}>
+              <div style={{fontSize:'11px',fontWeight:600,color:'var(--text-primary)',fontFamily:'Syne,sans-serif'}}>{m.label}</div>
+              <div style={{fontSize:'9px',color:'var(--text-secondary)',fontFamily:'monospace'}}>0:00:{String(m.time).padStart(2,'0')}</div>
+            </div>
+            <button style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>✕</button>
+          </div>
+        ))}
+      </div>
+      <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'8px'}}>HISTORY</div>
+      <div style={{display:'flex',flexDirection:'column',gap:'3px'}}>
+        {['Add clip Thunder_Ben.mp4','Trim clip at 0:02:15','Apply Cross Dissolve','Color grade V1','Import BG_Music.wav','Split clip at 0:01:30','Delete gap'].map((h,i)=>(
+          <div key={i} style={{padding:'5px 8px',borderRadius:'5px',fontSize:'10px',color:i===0?'var(--accent)':'var(--text-muted)',cursor:'pointer',background:i===0?'var(--accent-dim)':'transparent',transition:'all 0.15s',fontFamily:'DM Sans,sans-serif'}}
+            onMouseEnter={e=>e.currentTarget.style.background='var(--bg-hover)'}
+            onMouseLeave={e=>e.currentTarget.style.background=i===0?'var(--accent-dim)':'transparent'}
+          >
+            {i===0?'● ':''}{h}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+//  RIGHT PANEL — EFFECT CONTROLS
+// ═══════════════════════════════════════════════════
+function EffectControls({clip}:{clip:Clip|undefined}) {
+  const props = [
+    {label:'Position',  sub:'X',  val:'960.0', unit:'px', color:'#00E5FF'},
+    {label:'',          sub:'Y',  val:'540.0', unit:'px', color:'#00E5FF'},
+    {label:'Scale',     sub:'',   val:'100.0', unit:'%',  color:'#00FF94'},
+    {label:'Rotation',  sub:'',   val:'0.0',   unit:'°',  color:'#FFD60A'},
+    {label:'Anchor',    sub:'X',  val:'960.0', unit:'px', color:'#FF8C00'},
+    {label:'',          sub:'Y',  val:'540.0', unit:'px', color:'#FF8C00'},
+  ];
+  const appliedFx = clip ? [
+    {name:'Motion',    on:true},
+    {name:'Opacity',   on:true},
+  ] : [];
+
+  if(!clip) return (
+    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',textAlign:'center'}}>
+      <div>
+        <div style={{fontSize:'28px',marginBottom:'10px',opacity:0.15}}>🎛</div>
+        <div style={{fontSize:'11px',color:'var(--text-secondary)',lineHeight:1.6}}>Select a clip in the timeline<br/>to view its effect controls</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,overflowY:'auto',padding:'12px'}}>
+      {/* Clip identity */}
+      <div style={{padding:'8px 10px',borderRadius:'7px',background:`${clip.color}12`,border:`1px solid ${clip.color}30`,marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
+        <div style={{width:'8px',height:'8px',borderRadius:'50%',background:clip.color,flexShrink:0}}/>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:'11px',fontWeight:700,fontFamily:'Syne,sans-serif',color:clip.color,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{clip.label}</div>
+          <div style={{fontSize:'9px',color:'var(--text-secondary)'}}>{clip.type} · Track {clip.trackId}</div>
+        </div>
+      </div>
+
+      {/* MOTION section */}
+      <div style={{marginBottom:'10px'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',marginBottom:'6px'}}>
+          <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>▶ Motion</span>
+          <div style={{display:'flex',gap:'4px'}}>
+            <button title="Reset" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px'}}>↺</button>
+            <button title="Toggle" style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>👁</button>
+          </div>
+        </div>
+        {props.map((p,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:'4px',marginBottom:'5px'}}>
+            <div style={{width:'70px',flexShrink:0,display:'flex',alignItems:'center',gap:'3px'}}>
+              {/* Stopwatch (keyframe) icon */}
+              <button title="Enable keyframing" style={{width:'14px',height:'14px',borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg-secondary)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:'8px',color:'var(--text-muted)',padding:0}}>⏱</button>
+              <span style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>{p.label||''}{p.sub?` ${p.sub}`:''}</span>
+            </div>
+            <div style={{flex:1,background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:'4px',padding:'3px 6px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'ew-resize'}}>
+              <span style={{fontSize:'10px',fontFamily:'monospace',color:'var(--text-primary)'}}>{p.val}</span>
+              <span style={{fontSize:'9px',color:'var(--text-secondary)'}}>{p.unit}</span>
+            </div>
+            {/* Keyframe nav buttons */}
+            <div style={{display:'flex',gap:'1px',flexShrink:0}}>
+              <button style={{width:'12px',height:'20px',background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'8px',padding:0}}>◀</button>
+              <button style={{width:'12px',height:'20px',background:p.label?`${p.color}40`:'transparent',border:p.label?`1px solid ${p.color}60`:'none',borderRadius:'2px',color:p.label?p.color:'var(--text-muted)',cursor:'pointer',fontSize:'7px',padding:0}}>◆</button>
+              <button style={{width:'12px',height:'20px',background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'8px',padding:0}}>▶</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* OPACITY */}
+      <div style={{marginBottom:'10px'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',marginBottom:'6px'}}>
+          <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>▶ Opacity</span>
+          <button style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>👁</button>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+          <button title="Enable keyframing" style={{width:'14px',height:'14px',borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg-secondary)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:'8px',color:'var(--text-muted)',padding:0}}>⏱</button>
+          <input type="range" min={0} max={100} defaultValue={100} style={{flex:1,accentColor:'var(--text-primary)',height:'3px'}}/>
+          <span style={{fontSize:'10px',fontFamily:'monospace',color:'var(--text-primary)',width:'28px',textAlign:'right'}}>100%</span>
+        </div>
+      </div>
+
+      {/* TIME REMAPPING */}
+      <div style={{marginBottom:'10px'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',marginBottom:'6px'}}>
+          <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>▶ Time Remapping</span>
+          <button style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>👁</button>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+          <button style={{width:'14px',height:'14px',borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg-secondary)',cursor:'pointer',fontSize:'8px',color:'var(--text-muted)',padding:0,display:'flex',alignItems:'center',justifyContent:'center'}}>⏱</button>
+          <span style={{fontSize:'10px',color:'var(--text-secondary)'}}>Speed</span>
+          <div style={{flex:1,background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:'4px',padding:'3px 6px',display:'flex',justifyContent:'space-between',cursor:'ew-resize'}}>
+            <span style={{fontSize:'10px',fontFamily:'monospace',color:clip.speed?'#FFD60A':'var(--text-primary)'}}>{clip.speed||100}%</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ADD EFFECT */}
+      <button style={{width:'100%',padding:'7px',borderRadius:'7px',background:'transparent',border:'1px dashed var(--border)',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:600,marginBottom:'10px',transition:'all 0.2s'}}
+        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)';}}
+        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-secondary)';}}
+      >+ Add Effect</button>
+
+      {/* MASKING */}
+      <div style={{padding:'8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',marginBottom:'8px'}}>
+        <div style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'6px'}}>MASKING</div>
+        <div style={{display:'flex',gap:'4px'}}>
+          {['⭕ Ellipse','▭ Rectangle','✒ Pen'].map(m=>(
+            <button key={m} style={{flex:1,padding:'4px 2px',borderRadius:'5px',border:'1px solid var(--border)',background:'var(--bg-card)',color:'var(--text-secondary)',fontSize:'9px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:600,transition:'all 0.15s'}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)';}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text-secondary)';}}
+            >{m}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+//  EXPORT MODAL
+// ═══════════════════════════════════════════════════
+function ExportModal({onClose}:{onClose:()=>void}) {
+  const [format,setFormat] = useState('H.264 MP4');
+  const [res,setRes]       = useState('1080p (1920×1080)');
+  const [fps,setFps]       = useState('30 fps');
+  const [preset,setPreset] = useState('');
+  const platforms = [{n:'YouTube',icon:'🎬',tag:'1080p H.264'},{n:'Reels/TikTok',icon:'📱',tag:'9:16 1080p'},{n:'Vimeo',icon:'🎥',tag:'4K ProRes'},{n:'Broadcast',icon:'📺',tag:'1080i 29.97'}];
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:1000,background:'rgba(0,0,0,0.88)',backdropFilter:'blur(10px)',display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}} onClick={onClose}>
+      <div style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'20px',width:'100%',maxWidth:'480px',position:'relative',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+        <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:'linear-gradient(90deg,var(--accent),var(--cyan),var(--pink))'}}/>
+        <div style={{padding:'24px 24px 0'}}>
+          <h2 style={{fontFamily:'Syne,sans-serif',fontWeight:800,fontSize:'18px',marginBottom:'16px',color:'var(--text-primary)'}}>Export Project</h2>
+          {/* Platform presets */}
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'6px',marginBottom:'16px'}}>
+            {platforms.map(p=>(
+              <button key={p.n} onClick={()=>setPreset(p.n)} style={{padding:'7px 4px',borderRadius:'8px',border:`1px solid ${preset===p.n?'var(--accent)':'var(--border)'}`,background:preset===p.n?'var(--accent-dim)':'var(--bg-secondary)',cursor:'pointer',transition:'all 0.15s',textAlign:'center'}}>
+                <div style={{fontSize:'16px',marginBottom:'3px'}}>{p.icon}</div>
+                <div style={{fontSize:'9px',fontFamily:'Syne,sans-serif',fontWeight:700,color:preset===p.n?'var(--accent)':'var(--text-secondary)'}}>{p.n}</div>
+                <div style={{fontSize:'8px',color:'var(--text-muted)'}}>{p.tag}</div>
+              </button>
+            ))}
+          </div>
+          {/* Settings */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'14px'}}>
+            {[
+              {l:'Format',v:format,opts:['H.264 MP4','H.265 HEVC','ProRes 4444','WebM VP9','GIF'],set:setFormat},
+              {l:'Resolution',v:res,opts:['4K UHD (3840×2160)','1080p (1920×1080)','720p','480p','Custom'],set:setRes},
+              {l:'Frame Rate',v:fps,opts:['23.976 fps','24 fps','29.97 fps','30 fps','60 fps'],set:setFps},
+              {l:'Bitrate',v:'VBR 2-pass',opts:['CBR','VBR 1-pass','VBR 2-pass','Auto'],set:()=>{}},
+            ].map(f=>(
+              <div key={f.l}>
+                <div style={{fontSize:'9px',color:'var(--text-muted)',letterSpacing:'1.5px',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'4px'}}>{f.l.toUpperCase()}</div>
+                <select value={f.v} onChange={e=>f.set(e.target.value)} style={{width:'100%',padding:'7px 8px',background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:'7px',color:'var(--text-primary)',fontSize:'11px',outline:'none'}}>
+                  {f.opts.map(o=><option key={o}>{o}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+          {/* Est size */}
+          <div style={{display:'flex',justifyContent:'space-between',padding:'8px 10px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',marginBottom:'14px'}}>
+            <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Estimated File Size</div>
+            <div style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'monospace',fontWeight:700}}>~342 MB</div>
+          </div>
+        </div>
+        <div style={{padding:'0 24px 24px',display:'flex',gap:'10px'}}>
+          <button onClick={onClose} style={{flex:1,padding:'11px',borderRadius:'10px',background:'transparent',border:'1px solid var(--border)',color:'var(--text-secondary)',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:600,fontSize:'13px'}}>Cancel</button>
+          <button style={{flex:1,padding:'11px',borderRadius:'10px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-secondary)',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:600,fontSize:'13px'}}>+ Queue</button>
+          <button style={{flex:2,padding:'11px',borderRadius:'10px',background:'var(--accent)',border:'none',color:'white',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:700,fontSize:'13px',boxShadow:'0 0 20px var(--accent-glow)'}}>🚀 Export</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+//  MOBILE LAYOUT (kept from previous)
+// ═══════════════════════════════════════════════════
+function MobileEditor({clips,isPlaying,setIsPlaying,playheadPct,setPlayheadPct,timecode,selectedClip,setSelectedClip,onImportMedia,onImportTrack,showExport,setShowExport,notification}:{clips:Clip[];isPlaying:boolean;setIsPlaying:(v:boolean)=>void;playheadPct:number;setPlayheadPct:(v:number)=>void;timecode:string;selectedClip:number|null;setSelectedClip:(v:number|null)=>void;onImportMedia:(l:string)=>void;onImportTrack:(t:typeof MUSIC_TRACKS_DATA[0])=>void;showExport:boolean;setShowExport:(v:boolean)=>void;notification:string|null}) {
+  const [activeTab,setActiveTab]=useState<MobileTab>(null);
+  const videoClips=clips.filter(c=>c.type==='video'&&c.trackId===3);
+  const audioClips=clips.filter(c=>c.type==='audio'&&c.trackId===5);
+  const TABS=[{id:'videos' as MobileTab,icon:'📹',label:'Videos and images'},{id:'music' as MobileTab,icon:'🎵',label:'Music and audio'},{id:'titles' as MobileTab,icon:'T',label:'Titles and captions'}];
+  return (
+    <div style={{height:'100dvh',display:'flex',flexDirection:'column',background:'#0A0A0C',overflow:'hidden',WebkitUserSelect:'none',userSelect:'none'}}>
+      {/* Top bar */}
+      <div style={{height:'52px',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',background:'#0A0A0C'}}>
+        <div style={{display:'flex',gap:'20px',alignItems:'center'}}>
+          <Link href="/" style={{color:'var(--text-secondary)',display:'flex',textDecoration:'none'}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></Link>
+          <button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',display:'flex',padding:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button>
+          <button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',display:'flex',padding:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></button>
+        </div>
+        <span style={{fontFamily:'Syne,sans-serif',fontWeight:700,fontSize:'14px',color:'var(--text-primary)',letterSpacing:'0.5px'}}>Strike_the_Heavens</span>
+        <div style={{display:'flex',gap:'14px',alignItems:'center'}}>
+          <div style={{width:'28px',height:'28px',borderRadius:'50%',background:'linear-gradient(135deg,#FFD60A,#FF8C00)',display:'flex',alignItems:'center',justifyContent:'center'}}><svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M5 16L3 5l5.5 5L12 2l3.5 8L21 5l-2 11H5zm0 3h14v2H5v-2z"/></svg></div>
+          <button onClick={()=>setShowExport(true)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',display:'flex',padding:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg></button>
+        </div>
+      </div>
+      {/* Monitor */}
+      <div style={{flex:1,minHeight:0,background:'#000',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden'}}>
+        <div style={{position:'absolute',inset:0,background:'linear-gradient(135deg,#0a0020,#000510,#050005)'}}/>
+        <div style={{position:'relative',zIndex:1,fontSize:'10px',color:'rgba(255,255,255,0.08)',fontFamily:'Syne,sans-serif',letterSpacing:'3px',fontWeight:700}}>STRIKE THE HEAVENS</div>
+        <div style={{position:'absolute',bottom:'10px',left:'12px',fontFamily:'monospace',fontSize:'11px',color:'rgba(255,214,10,0.8)',fontWeight:700}}>{timecode}</div>
+      </div>
+      {/* Transport */}
+      <div style={{height:'56px',flexShrink:0,background:'#0D0D10',display:'flex',alignItems:'center',padding:'0 20px',borderTop:'1px solid var(--border)',borderBottom:'1px solid var(--border)'}}>
+        <div style={{display:'flex',gap:'16px',flex:1}}><button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',padding:0,fontSize:'18px'}}>≡</button><button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',padding:0,fontSize:'16px'}}>◆</button></div>
+        <div style={{display:'flex',gap:'24px',alignItems:'center'}}>
+          <button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-primary)',padding:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M19 20L9 12l10-8v16zM5 4h2v16H5z"/></svg></button>
+          <button onClick={()=>setIsPlaying(!isPlaying)} style={{width:'48px',height:'48px',borderRadius:'50%',background:isPlaying?'var(--accent)':'white',border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:isPlaying?'0 0 20px var(--accent-glow)':'0 4px 16px rgba(0,0,0,0.4)',transition:'all 0.2s',flexShrink:0}}>
+            {isPlaying?<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>:<svg width="18" height="18" viewBox="0 0 24 24" fill="#0A0A0C" style={{marginLeft:'2px'}}><polygon points="5 3 19 12 5 21 5 3"/></svg>}
+          </button>
+          <button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-primary)',padding:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l10 8-10 8V4zM19 4h2v16h-2z"/></svg></button>
+        </div>
+        <div style={{display:'flex',gap:'16px',flex:1,justifyContent:'flex-end'}}>
+          <button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',padding:0}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7v6h6"/><path d="M3 13A9 9 0 1021 12"/></svg></button>
+          <button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-secondary)',padding:0}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 7v6h-6"/><path d="M21 13A9 9 0 113 12"/></svg></button>
+        </div>
+      </div>
+      {/* Timeline */}
+      <div style={{background:'#0A0A0C',flexShrink:0,borderBottom:'1px solid var(--border)',height:activeTab?'130px':'150px',transition:'height 0.3s cubic-bezier(0.16,1,0.3,1)',overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        <div style={{height:'26px',flexShrink:0,overflowX:'auto',background:'#0D0D10',borderBottom:'1px solid var(--border)',position:'relative'}} onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setPlayheadPct(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));}}>
+          <div style={{minWidth:'800px',width:'100%',height:'100%',position:'relative'}}>
+            {[8,10,12,14,16,18,20,22,24].map(s=>(
+              <div key={s} style={{position:'absolute',left:`${(s/32)*100}%`,bottom:'4px',display:'flex',flexDirection:'column',alignItems:'center'}}>
+                <span style={{fontSize:'9px',color:'var(--text-secondary)',fontFamily:'monospace',whiteSpace:'nowrap'}}>0:{String(s).padStart(2,'0')}</span>
+              </div>
+            ))}
+            <div style={{position:'absolute',left:`${playheadPct}%`,top:0,bottom:0,width:'1.5px',background:'var(--yellow)',zIndex:10,boxShadow:'0 0 8px rgba(255,214,10,0.6)'}}>
+              <div style={{position:'absolute',top:0,left:'50%',transform:'translateX(-50%)',width:0,height:0,borderLeft:'5px solid transparent',borderRight:'5px solid transparent',borderTop:'7px solid var(--yellow)'}}/>
+            </div>
+          </div>
+        </div>
+        <div style={{flex:1,overflowX:'auto',position:'relative'}}>
+          <div style={{minWidth:'800px',height:'100%',position:'relative'}}>
+            <div style={{height:'60%',borderBottom:'1px solid var(--border)',position:'relative',background:'rgba(124,92,255,0.03)'}}>
+              {videoClips.map(c=>(
+                <div key={c.id} onClick={()=>setSelectedClip(c.id===selectedClip?null:c.id)} style={{position:'absolute',left:`${c.start*0.15}%`,width:`${c.width*0.15}%`,top:'5px',bottom:'5px',background:`${c.color}22`,border:`1.5px solid ${c.color}${selectedClip===c.id?'ff':'55'}`,borderRadius:'5px',overflow:'hidden',cursor:'pointer'}}>
+                  <div style={{position:'absolute',bottom:'2px',left:'4px',fontSize:'8px',color:c.color,fontFamily:'Syne,sans-serif',fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'90%'}}>{c.label.replace('.mp4','')}</div>
+                </div>
+              ))}
+              <div style={{position:'absolute',left:`${playheadPct}%`,top:0,bottom:0,width:'1.5px',background:'var(--yellow)',opacity:0.9,zIndex:5,pointerEvents:'none'}}/>
+            </div>
+            <div style={{height:'40%',position:'relative',background:'rgba(0,229,255,0.03)'}}>
+              {audioClips.map(c=>(
+                <div key={c.id} style={{position:'absolute',left:`${c.start*0.15}%`,width:`${c.width*0.15}%`,top:'3px',bottom:'3px',background:`${c.color}18`,border:`1px solid ${c.color}40`,borderRadius:'4px',overflow:'hidden'}}>
+                  <ClipWave color={c.color} n={Math.floor(c.width*0.18)}/>
+                </div>
+              ))}
+              <div style={{position:'absolute',left:`${playheadPct}%`,top:0,bottom:0,width:'1.5px',background:'var(--yellow)',opacity:0.9,zIndex:5,pointerEvents:'none'}}/>
+            </div>
+          </div>
+        </div>
+      </div>
+      {/* Bottom panel */}
+      <div style={{height:activeTab?'240px':0,overflow:'hidden',transition:'height 0.3s cubic-bezier(0.16,1,0.3,1)',background:'#0D0D10',borderTop:activeTab?'1px solid var(--border)':'none',overflowY:activeTab?'auto':'hidden'}}>
+        {activeTab==='videos' && (
+          <div style={{padding:'14px'}}>
+            <div style={{fontSize:'10px',letterSpacing:'1.5px',fontFamily:'Syne,sans-serif',fontWeight:700,color:'var(--text-muted)',marginBottom:'12px'}}>MEDIA FILES</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px'}}>
+              <button style={{aspectRatio:'1',borderRadius:'10px',border:'2px dashed var(--border)',background:'var(--bg-card)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'4px',cursor:'pointer'}}><span style={{fontSize:'22px',color:'var(--accent)'}}>+</span><span style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>Add</span></button>
+              {['Strike_the_H','Thunder_Ben','Thunder_at','Overlay'].map((n,i)=>(
+                <button key={i} onClick={()=>onImportMedia(`${n}.mp4`)} style={{aspectRatio:'1',borderRadius:'10px',border:'1px solid var(--border)',background:'rgba(124,92,255,0.1)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'4px',cursor:'pointer'}}>
+                  <span style={{fontSize:'20px'}}>🎬</span>
+                  <span style={{fontSize:'8px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:600,textAlign:'center',padding:'0 3px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',width:'100%'}}>{n}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {activeTab==='music' && (
+          <div style={{padding:'14px'}}>
+            <div style={{fontSize:'10px',letterSpacing:'1.5px',fontFamily:'Syne,sans-serif',fontWeight:700,color:'var(--text-muted)',marginBottom:'12px'}}>MUSIC LIBRARY</div>
+            <div style={{display:'flex',flexDirection:'column',gap:'7px'}}>
+              {MUSIC_TRACKS_DATA.map(t=>(
+                <div key={t.id} onClick={()=>onImportTrack(t)} style={{display:'flex',alignItems:'center',gap:'10px',padding:'10px',borderRadius:'10px',background:`${t.accent}0d`,border:`1px solid ${t.accent}25`,cursor:'pointer'}}>
+                  <div style={{width:'38px',height:'38px',borderRadius:'8px',background:`${t.accent}20`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                    <span style={{fontSize:'16px'}}>🎵</span>
+                  </div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:'12px',fontWeight:700,fontFamily:'Syne,sans-serif',color:'var(--text-primary)'}}>{t.title}</div>
+                    <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>{t.artist} · {t.bpm} BPM</div>
+                  </div>
+                  <button style={{width:'28px',height:'28px',borderRadius:'50%',background:t.accent,border:'none',color:'white',fontSize:'12px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>+</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {activeTab==='titles' && (
+          <div style={{padding:'14px'}}>
+            <div style={{fontSize:'10px',letterSpacing:'1.5px',fontFamily:'Syne,sans-serif',fontWeight:700,color:'var(--text-muted)',marginBottom:'12px'}}>TEXT & TITLES</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px'}}>
+              {[{n:'Lower Third',i:'▬',c:'#7C5CFF'},{n:'Title Card',i:'≡',c:'#00E5FF'},{n:'Subtitle',i:'—',c:'#FF3B82'},{n:'End Screen',i:'⏹',c:'#00FF94'},{n:'Name Tag',i:'👤',c:'#FF8C00'},{n:'Animated',i:'✨',c:'#FFD60A'}].map((p,i)=>(
+                <button key={i} style={{padding:'12px 6px',borderRadius:'10px',border:`1px solid ${p.c}28`,background:`${p.c}0d`,display:'flex',flexDirection:'column',alignItems:'center',gap:'5px',cursor:'pointer'}}>
+                  <span style={{fontSize:'18px'}}>{p.i}</span>
+                  <span style={{fontSize:'9px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:600,textAlign:'center'}}>{p.n}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Bottom tabs */}
+      <div style={{flexShrink:0,background:'#0A0A0C',borderTop:'1px solid var(--border)',display:'flex',paddingBottom:'env(safe-area-inset-bottom,0px)'}}>
+        {TABS.map(tab=>{
+          const active=activeTab===tab.id;
+          return (
+            <button key={tab.id} onClick={()=>setActiveTab(p=>p===tab.id?null:tab.id)} style={{flex:1,border:'none',cursor:'pointer',background:'transparent',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'4px',padding:'10px 4px 12px',color:active?'var(--accent)':'var(--text-secondary)',transition:'color 0.2s',position:'relative'}}>
+              {active&&<div style={{position:'absolute',top:0,left:'15%',right:'15%',height:'2px',background:'var(--accent)',borderRadius:'0 0 2px 2px'}}/>}
+              <span style={{fontSize:'20px'}}>{tab.icon}</span>
+              <span style={{fontSize:'9px',fontFamily:'Syne,sans-serif',fontWeight:600,textAlign:'center',lineHeight:1.2}}>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      {showExport&&<ExportModal onClose={()=>setShowExport(false)}/>}
+      {notification&&<div style={{position:'fixed',bottom:'80px',left:'50%',transform:'translateX(-50%)',zIndex:2000,padding:'9px 18px',borderRadius:'9px',background:'var(--bg-card)',border:'1px solid var(--accent)',fontSize:'12px',fontFamily:'Syne,sans-serif',fontWeight:600,color:'var(--accent)',boxShadow:'0 8px 30px rgba(0,0,0,0.5)',whiteSpace:'nowrap',animation:'fadeInUp 0.3s ease'}}>✓ {notification}</div>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+//  MAIN EDITOR
+// ═══════════════════════════════════════════════════
+export default function EditorPage() {
+  const [activeTool,setActiveTool]     = useState<ToolId>('select');
+  const [leftTab,setLeftTab]           = useState<LeftTab>('media');
+  const [rightTab,setRightTab]         = useState<RightTab>('effectcontrols');
+  const [workspace,setWorkspace]       = useState<Workspace>('editing');
+  const [tracks,setTracks]             = useState<Track[]>(initTracks);
+  const [clips,setClips]               = useState<Clip[]>(initClips);
+  const [markers,setMarkers]           = useState<Marker[]>(initMarkers);
+  const [isPlaying,setIsPlaying]       = useState(false);
+  const [playheadPos,setPlayheadPos]   = useState(38);
+  const [zoom,setZoom]                 = useState(1);
+  const [selectedClip,setSelectedClip] = useState<number|null>(null);
+  const [timecode,setTimecode]         = useState('00:00:38;14');
+  const [showExport,setShowExport]     = useState(false);
+  const [notification,setNotification] = useState<string|null>(null);
+  const [isMobile,setIsMobile]         = useState(false);
+  const [leftWidth]                    = useState(260);
+  const tlRef = useRef<HTMLDivElement>(null);
+
+  useEffect(()=>{
+    const check=()=>setIsMobile(window.innerWidth<768);
+    check();
+    window.addEventListener('resize',check);
+    return ()=>window.removeEventListener('resize',check);
+  },[]);
+
+  const notify=(msg:string)=>{setNotification(msg);setTimeout(()=>setNotification(null),2500);};
+
+  const handleImportMedia=(label:string)=>{
+    setClips(p=>[...p,{id:Date.now(),trackId:3,start:380,width:130,label,color:'#9966FF',type:'video'}]);
+    notify(`"${label}" added to V1`);
+  };
+  const handleImportTrack=(t:typeof MUSIC_TRACKS_DATA[0])=>{
+    setClips(p=>[...p,{id:Date.now(),trackId:5,start:0,width:420,label:`${t.title} — ${t.artist}`,color:t.accent,type:'audio'}]);
+    notify(`"${t.title}" imported to A2`);
+  };
+  const handleTLClick=(e:React.MouseEvent<HTMLDivElement>)=>{
+    if(!tlRef.current) return;
+    const r=tlRef.current.getBoundingClientRect();
+    setPlayheadPos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
+  };
+
+  const selectedClipObj = clips.find(c=>c.id===selectedClip);
+
+  if(isMobile) return (
+    <MobileEditor clips={clips} isPlaying={isPlaying} setIsPlaying={setIsPlaying}
+      playheadPct={playheadPos} setPlayheadPct={setPlayheadPos}
+      timecode={timecode} selectedClip={selectedClip} setSelectedClip={setSelectedClip}
+      onImportMedia={handleImportMedia} onImportTrack={handleImportTrack}
+      showExport={showExport} setShowExport={setShowExport} notification={notification}
+    />
+  );
+
+  // Desktop
+  return (
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',background:'var(--bg-primary)',overflow:'hidden',userSelect:'none'}}>
+
+      {/* ─── TOP MENU BAR ─── */}
+      <div style={{height:'38px',flexShrink:0,background:'var(--bg-tertiary)',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',padding:'0 14px',gap:'0',zIndex:50}}>
+        <Link href="/" style={{display:'flex',alignItems:'center',gap:'6px',textDecoration:'none',marginRight:'18px'}}>
+          <div style={{width:'20px',height:'20px',borderRadius:'4px',background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'10px',fontWeight:900,fontFamily:'Syne,sans-serif',color:'white',boxShadow:'0 0 10px var(--accent-glow)'}}>E</div>
+          <span style={{fontFamily:'Syne,sans-serif',fontWeight:800,fontSize:'12px',letterSpacing:'1px',color:'var(--text-primary)'}}>ECLIPSO</span>
+        </Link>
+        {['File','Edit','Clip','Sequence','Markers','Graphics','View','Window','Help'].map(m=>(
+          <button key={m} style={{padding:'0 8px',height:'100%',background:'none',border:'none',color:'var(--text-secondary)',fontSize:'11px',cursor:'pointer',fontFamily:'DM Sans,sans-serif',transition:'all 0.15s',whiteSpace:'nowrap'}}
+            onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';e.currentTarget.style.color='var(--text-primary)';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='var(--text-secondary)';}}
+          >{m}</button>
+        ))}
+        <div style={{flex:1,textAlign:'center'}}>
+          <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>Strike_the_Heavens</span>
+          <span style={{fontSize:'10px',color:'var(--accent)',marginLeft:'6px'}}>● Edited</span>
+        </div>
+        {/* Workspace selector */}
+        <div style={{display:'flex',gap:'2px',background:'var(--bg-secondary)',borderRadius:'6px',padding:'2px',border:'1px solid var(--border)',marginRight:'10px'}}>
+          {WORKSPACES.map(w=>(
+            <button key={w.id} onClick={()=>setWorkspace(w.id)} style={{padding:'3px 8px',borderRadius:'4px',border:'none',background:workspace===w.id?'var(--accent)':'transparent',color:workspace===w.id?'white':'var(--text-muted)',fontSize:'10px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:600,transition:'all 0.15s',whiteSpace:'nowrap'}}>{w.label}</button>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+          <button style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'14px'}}>🔔</button>
+          <button style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'13px'}}>⚙</button>
+          <button onClick={()=>setShowExport(true)} style={{background:'var(--accent)',border:'none',color:'white',padding:'4px 12px',borderRadius:'5px',cursor:'pointer',fontSize:'11px',fontFamily:'Syne,sans-serif',fontWeight:700,boxShadow:'0 0 10px var(--accent-glow)'}}>Export</button>
+        </div>
+      </div>
+
+      {/* ─── MAIN WORKSPACE ─── */}
+      <div style={{flex:1,display:'flex',overflow:'hidden'}}>
+
+        {/* ── TOOL PANEL ── */}
+        <div style={{width:'42px',flexShrink:0,background:'var(--bg-secondary)',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',alignItems:'center',padding:'6px 0',gap:'1px',zIndex:40}}>
+          {TOOLS.map((tool,idx)=>{
+            const showDivider = idx>0 && tool.group !== TOOLS[idx-1].group;
+            return (
+              <div key={tool.id} style={{width:'100%',display:'flex',flexDirection:'column',alignItems:'center'}}>
+                {showDivider && <div style={{width:'24px',height:'1px',background:'var(--border)',margin:'3px 0'}}/>}
+                <button title={`${tool.label} (${tool.key})`} onClick={()=>setActiveTool(tool.id)} style={{width:'32px',height:'32px',borderRadius:'6px',border:'none',background:activeTool===tool.id?'var(--accent)':'transparent',color:activeTool===tool.id?'white':'var(--text-secondary)',fontSize:'13px',cursor:'pointer',transition:'all 0.15s',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'Syne,sans-serif',boxShadow:activeTool===tool.id?'0 0 10px var(--accent-glow)':'none'}}
+                  onMouseEnter={e=>{if(activeTool!==tool.id){e.currentTarget.style.background='var(--bg-hover)';e.currentTarget.style.color='var(--text-primary)';}}}
+                  onMouseLeave={e=>{if(activeTool!==tool.id){e.currentTarget.style.background='transparent';e.currentTarget.style.color='var(--text-secondary)';}}}
+                >{tool.icon}</button>
+              </div>
+            );
+          })}
+          <div style={{flex:1}}/>
+          {/* Bottom tool utilities */}
+          {['📤','🔗','📝','?'].map((ic,i)=>(
+            <button key={i} title={['Send to Encoder','Link/Unlink','Notes','Help'][i]} style={{width:'32px',height:'32px',borderRadius:'6px',border:'none',background:'transparent',color:'var(--text-muted)',fontSize:'12px',cursor:'pointer',transition:'all 0.15s'}}
+              onMouseEnter={e=>{e.currentTarget.style.color='var(--text-secondary)';}}
+              onMouseLeave={e=>{e.currentTarget.style.color='var(--text-muted)';}}
+            >{ic}</button>
+          ))}
+        </div>
+
+        {/* ── LEFT PANEL ── */}
+        <div style={{width:`${leftWidth}px`,flexShrink:0,background:'var(--bg-secondary)',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',zIndex:30}}>
+          {/* Tab icons (icon-only, scrollable) */}
+          <div style={{display:'flex',borderBottom:'1px solid var(--border)',overflowX:'auto',background:'var(--bg-tertiary)',flexShrink:0}}>
+            {LEFT_TABS.map(tab=>(
+              <button key={tab.id} onClick={()=>setLeftTab(tab.id)} title={tab.label} style={{flexShrink:0,width:'42px',padding:'7px 0',border:'none',background:'transparent',borderBottom:`2px solid ${leftTab===tab.id?'var(--accent)':'transparent'}`,cursor:'pointer',transition:'all 0.15s',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'1px',position:'relative'}}
+                onMouseEnter={e=>{if(leftTab!==tab.id)e.currentTarget.style.background='var(--bg-hover)';}}
+                onMouseLeave={e=>{if(leftTab!==tab.id)e.currentTarget.style.background='transparent';}}
+              >
+                <span style={{fontSize:'14px'}}>{tab.icon}</span>
+                {tab.badge && <div style={{position:'absolute',top:'3px',right:'3px',background:'var(--accent)',color:'white',fontSize:'7px',borderRadius:'4px',padding:'0 3px',fontFamily:'Syne,sans-serif',fontWeight:700,lineHeight:'12px',minWidth:'12px',textAlign:'center'}}>{tab.badge}</div>}
+              </button>
+            ))}
+          </div>
+          {/* Tab label */}
+          <div style={{padding:'7px 12px',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+            <span style={{fontSize:'9px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700}}>{LEFT_TABS.find(t=>t.id===leftTab)?.label.toUpperCase()}</span>
+          </div>
+          {/* Panel content */}
+          <div style={{flex:1,overflowY:'auto',padding:'12px'}}>
+            {leftTab==='media'       && <PanelMedia   onImport={handleImportMedia}/>}
+            {leftTab==='library'     && <PanelLibrary onImport={handleImportTrack}/>}
+            {leftTab==='effects'     && <PanelEffects/>}
+            {leftTab==='transitions' && <PanelTransitions/>}
+            {leftTab==='color'       && <PanelColor/>}
+            {leftTab==='sound'       && <PanelSound/>}
+            {leftTab==='mixer'       && <PanelMixer/>}
+            {leftTab==='captions'    && <PanelCaptions/>}
+            {leftTab==='ai'          && <PanelAI/>}
+            {leftTab==='markers'     && <PanelMarkers markers={markers} onJump={t=>setPlayheadPos(t/120*100)}/>}
+          </div>
+        </div>
+
+        {/* ── CENTER ── */}
+        <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minWidth:0}}>
+
+          {/* MONITORS */}
+          <div style={{display:'flex',height:'42%',flexShrink:0,borderBottom:'1px solid var(--border)'}}>
+            {/* Source Monitor */}
+            <div style={{flex:1,borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column'}}>
+              <div style={{padding:'5px 10px',display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+                <span style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>Source: (no clips)</span>
+                <div style={{display:'flex',gap:'4px'}}>
+                  {['◁','▷'].map((ic,i)=><button key={i} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
+                </div>
+              </div>
+              <div style={{flex:1,background:'#050508',display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
+                <div style={{textAlign:'center',color:'var(--text-muted)'}}>
+                  <div style={{fontSize:'28px',marginBottom:'6px',opacity:0.15}}>🎬</div>
+                  <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Double-click clip to preview</div>
+                </div>
+              </div>
+              {/* Source monitor controls */}
+              <div style={{padding:'4px 8px',display:'flex',gap:'4px',alignItems:'center',borderTop:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+                <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--text-secondary)',marginRight:'4px'}}>00;00;00;00</span>
+                <div style={{flex:1,display:'flex',justifyContent:'center',gap:'3px',alignItems:'center'}}>
+                  {/* In/Out point buttons */}
+                  <button title="Mark In (I)" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'{I}'}</button>
+                  {['⏮','⏪','▶','⏩','⏭'].map(ic=><button key={ic} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
+                  <button title="Mark Out (O)" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'O}'}</button>
+                </div>
+                {/* Drag video/audio only icons */}
+                <div style={{display:'flex',gap:'3px'}}>
+                  <button title="Drag Video Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:'pointer',fontSize:'9px',padding:'2px 4px',borderRadius:'3px'}}>V</button>
+                  <button title="Drag Audio Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:'pointer',fontSize:'9px',padding:'2px 4px',borderRadius:'3px'}}>A</button>
+                </div>
+              </div>
+            </div>
+
+            {/* Program Monitor */}
+            <div style={{flex:1,display:'flex',flexDirection:'column'}}>
+              <div style={{padding:'5px 10px',display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+                <span style={{fontSize:'10px',color:'var(--accent)',fontFamily:'Syne,sans-serif',fontWeight:600}}>Program: Strike_the_Heavens</span>
+                <div style={{display:'flex',gap:'3px'}}>
+                  <button title="Safe Margins" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>⊞</button>
+                  <button title="Full Screen" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>⛶</button>
+                </div>
+              </div>
+              <div style={{flex:1,background:'#020204',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden'}}>
+                <div style={{position:'absolute',inset:0,background:'linear-gradient(135deg,#0a0020,#000510,#050005)'}}/>
+                <div style={{position:'relative',zIndex:1}}>
+                  <div style={{fontSize:'10px',color:'rgba(255,255,255,0.07)',fontFamily:'Syne,sans-serif',letterSpacing:'3px'}}>STRIKE THE HEAVENS</div>
+                </div>
+                <div style={{position:'absolute',inset:'8%',border:'1px solid rgba(255,255,255,0.04)',pointerEvents:'none'}}/>
+                {/* Scope mini */}
+                {workspace==='color' && (
+                  <div style={{position:'absolute',bottom:'6px',right:'6px',width:'80px',height:'50px',background:'rgba(0,0,0,0.7)',border:'1px solid var(--border)',borderRadius:'4px',overflow:'hidden',display:'flex',alignItems:'flex-end',gap:'1px',padding:'2px'}}>
+                    {Array.from({length:20},(_,k)=>(
+                      <div key={k} style={{flex:1,height:`${CLIP_WAVE[k]*0.6+10}%`,background:`hsl(${k*18},80%,55%)`,opacity:0.7,borderRadius:'1px'}}/>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div style={{padding:'4px 8px',display:'flex',gap:'4px',alignItems:'center',borderTop:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+                <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--yellow)',fontWeight:700,minWidth:'80px'}}>{timecode}</span>
+                <div style={{flex:1,display:'flex',justifyContent:'center',gap:'3px',alignItems:'center'}}>
+                  {['⏮','⏪'].map(ic=><button key={ic} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
+                  <button onClick={()=>setIsPlaying(p=>!p)} style={{background:'var(--accent)',border:'none',color:'white',width:'24px',height:'24px',borderRadius:'50%',cursor:'pointer',fontSize:'10px',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 8px var(--accent-glow)'}}>{isPlaying?'⏸':'▶'}</button>
+                  {['⏩','⏭'].map(ic=><button key={ic} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
+                </div>
+                <div style={{display:'flex',gap:'3px'}}>
+                  <select style={{background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-secondary)',fontSize:'9px',borderRadius:'3px',padding:'1px 3px',outline:'none',cursor:'pointer'}}>
+                    {['Full','1/2','1/4'].map(v=><option key={v}>{v}</option>)}
+                  </select>
+                  <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--text-secondary)',minWidth:'64px',textAlign:'right'}}>00;02;01;22</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* TIMELINE */}
+          <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+            {/* Timeline toolbar */}
+            <div style={{padding:'4px 10px',display:'flex',alignItems:'center',gap:'8px',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+              {/* Sequence tab */}
+              <div style={{display:'flex',gap:'1px',background:'var(--bg-secondary)',borderRadius:'5px',padding:'2px',border:'1px solid var(--border)'}}>
+                {['Strike_the_Heavens','Sequence 02'].map((s,i)=>(
+                  <button key={s} style={{padding:'2px 8px',borderRadius:'3px',border:'none',background:i===0?'var(--accent)':'transparent',color:i===0?'white':'var(--text-muted)',fontSize:'9px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:700,whiteSpace:'nowrap'}}>{s}</button>
+                ))}
+                <button style={{padding:'2px 5px',borderRadius:'3px',border:'none',background:'transparent',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>+</button>
+              </div>
+              <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--yellow)',fontWeight:700}}>{timecode}</span>
+              <div style={{flex:1}}/>
+              {/* Timeline tools */}
+              <div style={{display:'flex',gap:'2px'}}>
+                {[
+                  {ic:'🔧',tip:'Timeline Settings'},
+                  {ic:'✂',tip:'Ripple Delete'},
+                  {ic:'⟺',tip:'Match Frame'},
+                  {ic:'🔍',tip:'Zoom to Sequence'},
+                  {ic:'🧲',tip:'Snapping (S)'},
+                  {ic:'🔗',tip:'Linked Selection'},
+                ].map(b=>(
+                  <button key={b.ic} title={b.tip} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'12px',padding:'2px 4px',borderRadius:'3px',transition:'all 0.15s'}}
+                    onMouseEnter={e=>e.currentTarget.style.background='var(--bg-hover)'}
+                    onMouseLeave={e=>e.currentTarget.style.background='none'}
+                  >{b.ic}</button>
+                ))}
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                <button style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>—</button>
+                <input type="range" min={50} max={400} value={zoom*100} onChange={e=>setZoom(Number(e.target.value)/100)} style={{width:'70px',accentColor:'var(--accent)',height:'3px'}}/>
+                <button style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>+</button>
+              </div>
+            </div>
+
+            {/* Timeline body */}
+            <div style={{flex:1,display:'flex',overflow:'hidden'}}>
+              {/* Track headers */}
+              <div style={{width:'130px',flexShrink:0,background:'var(--bg-secondary)',borderRight:'1px solid var(--border)',overflowY:'hidden',display:'flex',flexDirection:'column'}}>
+                {/* Ruler placeholder */}
+                <div style={{height:'30px',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'flex-end',padding:'0 6px',gap:'4px'}}>
+                  <button title="Add Video Track" style={{fontSize:'9px',background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-secondary)',borderRadius:'3px',padding:'1px 4px',cursor:'pointer'}}>+V</button>
+                  <button title="Add Audio Track" style={{fontSize:'9px',background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-secondary)',borderRadius:'3px',padding:'1px 4px',cursor:'pointer'}}>+A</button>
+                </div>
+                {tracks.map(track=>(
+                  <div key={track.id} style={{height:`${track.height}px`,display:'flex',alignItems:'center',padding:'0 6px',gap:'4px',borderBottom:'1px solid var(--border)',background:track.type==='video'?'rgba(124,92,255,0.04)':track.type==='caption'?'rgba(255,214,10,0.04)':'rgba(0,229,255,0.04)',flexShrink:0,position:'relative'}}>
+                    {/* Track color bar */}
+                    <div style={{position:'absolute',left:0,top:0,bottom:0,width:'2px',background:track.color}}/>
+                    <button onClick={()=>setTracks(p=>p.map(t=>t.id===track.id?{...t,locked:!t.locked}:t))} style={{background:'none',border:'none',cursor:'pointer',fontSize:'9px',opacity:track.locked?0.9:0.2,color:'var(--text-secondary)',flexShrink:0,padding:0}}>🔒</button>
+                    <span style={{fontSize:'10px',fontFamily:'monospace',color:track.color,fontWeight:700,width:'20px',flexShrink:0}}>{track.label}</span>
+                    {track.type!=='caption' && (
+                      <>
+                        <button onClick={()=>setTracks(p=>p.map(t=>t.id===track.id?{...t,muted:!t.muted}:t))} style={{width:'16px',height:'14px',borderRadius:'2px',border:'none',cursor:'pointer',fontSize:'7px',background:track.muted?'#FF3B82':'var(--bg-card)',color:track.muted?'white':'var(--text-secondary)',fontWeight:700,flexShrink:0}}>M</button>
+                        <button onClick={()=>setTracks(p=>p.map(t=>t.id===track.id?{...t,solo:!t.solo}:t))} style={{width:'16px',height:'14px',borderRadius:'2px',border:'none',cursor:'pointer',fontSize:'7px',background:track.solo?'#FFD60A':'var(--bg-card)',color:track.solo?'#000':'var(--text-secondary)',fontWeight:700,flexShrink:0}}>S</button>
+                      </>
+                    )}
+                    <button style={{background:'none',border:'none',cursor:'pointer',fontSize:'9px',opacity:0.3,color:'var(--text-secondary)',flexShrink:0,padding:0}}>👁</button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Track canvas area */}
+              <div style={{flex:1,overflowX:'auto',overflowY:'hidden',position:'relative'}}>
+                {/* Ruler */}
+                <div ref={tlRef} onClick={handleTLClick} style={{height:'30px',background:'var(--bg-tertiary)',borderBottom:'1px solid var(--border)',position:'sticky',top:0,zIndex:5,cursor:'crosshair',flexShrink:0,overflow:'hidden'}}>
+                  <div style={{minWidth:'700px',width:'100%',height:'100%',position:'relative'}}>
+                    {Array.from({length:25},(_,i)=>(
+                      <div key={i} style={{position:'absolute',left:`${i*4*zoom}%`,display:'flex',flexDirection:'column',alignItems:'flex-start',top:'6px'}}>
+                        <div style={{width:'1px',height:'8px',background:'var(--border-bright)'}}/>
+                        <span style={{fontSize:'8px',color:'var(--text-secondary)',fontFamily:'monospace',whiteSpace:'nowrap',marginTop:'1px'}}>
+                          {String(Math.floor(i*4/60)).padStart(2,'0')}:{String((i*4)%60).padStart(2,'0')}
+                        </span>
+                      </div>
+                    ))}
+                    {/* Tick marks */}
+                    {Array.from({length:100},(_,i)=>(
+                      <div key={i} style={{position:'absolute',left:`${i*zoom}%`,top:'4px',width:'1px',height:'4px',background:'rgba(255,255,255,0.06)'}}/>
+                    ))}
+                    {/* Markers on ruler */}
+                    {markers.map(m=>(
+                      <div key={m.id} title={m.label} style={{position:'absolute',left:`${m.time/120*100}%`,top:0,zIndex:8,cursor:'pointer'}}>
+                        <div style={{width:0,height:0,borderLeft:'5px solid transparent',borderRight:'5px solid transparent',borderTop:`8px solid ${m.color}`,transform:'translateX(-50%)'}}/>
+                        <div style={{position:'absolute',top:'8px',left:'50%',transform:'translateX(-50%)',background:m.color,color:'#000',fontSize:'7px',padding:'1px 3px',borderRadius:'2px',whiteSpace:'nowrap',fontFamily:'Syne,sans-serif',fontWeight:700}}>{m.label}</div>
+                      </div>
+                    ))}
+                    {/* Playhead in ruler */}
+                    <div style={{position:'absolute',left:`${playheadPos}%`,top:0,bottom:0,width:'1px',background:'var(--yellow)',zIndex:10,boxShadow:'0 0 8px rgba(255,214,10,0.5)'}}>
+                      <div style={{position:'absolute',top:0,left:'50%',transform:'translateX(-50%)',width:0,height:0,borderLeft:'5px solid transparent',borderRight:'5px solid transparent',borderTop:'8px solid var(--yellow)'}}/>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tracks */}
+                <div onClick={handleTLClick} style={{position:'relative'}}>
+                  {tracks.map(track=>(
+                    <div key={track.id} style={{height:`${track.height}px`,borderBottom:'1px solid var(--border)',background:track.type==='video'?'rgba(124,92,255,0.015)':track.type==='caption'?'rgba(255,214,10,0.015)':'rgba(0,229,255,0.015)',position:'relative',cursor:activeTool==='razor'?'crosshair':'pointer',flexShrink:0}}>
+                      {/* Beat grid */}
+                      {Array.from({length:100},(_,i)=>(
+                        <div key={i} style={{position:'absolute',left:`${i*zoom}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.015)'}}/>
+                      ))}
+                      {Array.from({length:25},(_,i)=>(
+                        <div key={i} style={{position:'absolute',left:`${i*4*zoom}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.04)'}}/>
+                      ))}
+
+                      {/* Caption track label */}
+                      {track.type==='caption' && (
+                        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',padding:'0 8px',gap:'8px',pointerEvents:'none'}}>
+                          <span style={{fontSize:'8px',color:'rgba(255,214,10,0.3)',fontFamily:'Syne,sans-serif',fontWeight:700,letterSpacing:'1px'}}>CAPTIONS TRACK</span>
+                        </div>
+                      )}
+
+                      {/* Clips on this track */}
+                      {clips.filter(c=>c.trackId===track.id).map(clip=>(
+                        <div key={clip.id} onClick={e=>{e.stopPropagation();setSelectedClip(clip.id===selectedClip?null:clip.id);}} style={{
+                          position:'absolute',
+                          left:`${clip.start*zoom*0.14}%`,
+                          width:`${clip.width*zoom*0.14}%`,
+                          top: track.type==='caption'?'2px':'4px',
+                          bottom: track.type==='caption'?'2px':'4px',
+                          background:`${clip.color}20`,
+                          border:`1px solid ${clip.color}${selectedClip===clip.id?'ee':'50'}`,
+                          borderRadius: track.type==='caption'?'3px':'5px',
+                          overflow:'hidden',
+                          cursor:activeTool==='select'?'move':activeTool==='razor'?'crosshair':'pointer',
+                          boxShadow:selectedClip===clip.id?`0 0 0 1.5px ${clip.color}, inset 0 0 0 1px ${clip.color}40`:'none',
+                          transition:'border-color 0.1s',
+                          display:'flex', flexDirection:'column',
+                        }}>
+                          {/* Clip header */}
+                          <div style={{display:'flex',alignItems:'center',gap:'3px',padding:'2px 4px',flexShrink:0,background:`${clip.color}10`}}>
+                            <span style={{fontSize:'8px',color:clip.color,fontFamily:'Syne,sans-serif',fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:1}}>{clip.label}</span>
+                            {/* Badges */}
+                            {clip.speed && clip.speed!==100 && <span style={{fontSize:'7px',background:'#FFD60A22',border:'1px solid #FFD60A44',color:'#FFD60A',borderRadius:'2px',padding:'0 3px',flexShrink:0}}>{clip.speed}%</span>}
+                            {clip.proxy && <span style={{fontSize:'7px',background:'#00E5FF22',border:'1px solid #00E5FF44',color:'#00E5FF',borderRadius:'2px',padding:'0 2px',flexShrink:0}}>P</span>}
+                            {clip.nested && <span style={{fontSize:'7px',background:'rgba(124,92,255,0.2)',border:'1px solid rgba(124,92,255,0.4)',color:'var(--accent)',borderRadius:'2px',padding:'0 2px',flexShrink:0}}>N</span>}
+                          </div>
+                          {/* Waveform body */}
+                          {track.type!=='caption' && (
+                            <div style={{flex:1,overflow:'hidden'}}>
+                              <ClipWave color={clip.color} n={Math.floor(clip.width*zoom*0.25)}/>
+                            </div>
+                          )}
+                          {/* Transition zone indicator at edges */}
+                          <div style={{position:'absolute',left:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to right,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
+                          <div style={{position:'absolute',right:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to left,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
+                        </div>
+                      ))}
+
+                      {/* Playhead line */}
+                      <div style={{position:'absolute',left:`${playheadPos}%`,top:0,bottom:0,width:'1px',background:'var(--yellow)',opacity:0.85,zIndex:8,pointerEvents:'none',boxShadow:'0 0 4px rgba(255,214,10,0.4)'}}/>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Timeline footer / transport */}
+            <div style={{height:'30px',flexShrink:0,display:'flex',alignItems:'center',padding:'0 10px',gap:'10px',borderTop:'1px solid var(--border)',background:'var(--bg-tertiary)'}}>
+              <div style={{display:'flex',gap:'3px',alignItems:'center'}}>
+                {['⏮','⏪',isPlaying?'⏸':'▶','⏩','⏭'].map((ic,i)=>(
+                  <button key={i} onClick={i===2?()=>setIsPlaying(p=>!p):undefined} style={{background:i===2?'var(--accent)':'none',border:'none',color:i===2?'white':'var(--text-secondary)',cursor:'pointer',fontSize:'12px',borderRadius:'4px',width:'22px',height:'22px',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{ic}</button>
+                ))}
+              </div>
+              <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--yellow)',fontWeight:700}}>{timecode}</span>
+              {/* Progress bar */}
+              <div style={{flex:1,height:'3px',background:'var(--border)',borderRadius:'2px',position:'relative',cursor:'pointer'}} onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setPlayheadPos((e.clientX-r.left)/r.width*100);}}>
+                <div style={{width:`${playheadPos}%`,height:'100%',background:'var(--accent)',borderRadius:'2px'}}/>
+                <div style={{position:'absolute',left:`${playheadPos}%`,top:'50%',transform:'translate(-50%,-50%)',width:'9px',height:'9px',borderRadius:'50%',background:'var(--accent)',border:'1.5px solid white'}}/>
+              </div>
+              <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--text-secondary)'}}>00;02;01;22</span>
+              {/* Auto-save indicator */}
+              <div style={{display:'flex',alignItems:'center',gap:'4px',marginLeft:'4px'}}>
+                <div style={{width:'5px',height:'5px',borderRadius:'50%',background:'var(--green)'}}/>
+                <span style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif'}}>Saved</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── RIGHT PANEL — EFFECT CONTROLS ── */}
+        <div style={{width:'240px',flexShrink:0,background:'var(--bg-secondary)',borderLeft:'1px solid var(--border)',display:'flex',flexDirection:'column',zIndex:30}}>
+          {/* Tab bar */}
+          <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
+            {[{id:'effectcontrols' as RightTab,label:'Effect Controls'},{id:'info' as RightTab,label:'Info'}].map(t=>(
+              <button key={t.id} onClick={()=>setRightTab(t.id)} style={{flex:1,padding:'7px 4px',border:'none',background:'transparent',borderBottom:`2px solid ${rightTab===t.id?'var(--accent)':'transparent'}`,color:rightTab===t.id?'var(--accent)':'var(--text-muted)',fontSize:'10px',cursor:'pointer',fontFamily:'Syne,sans-serif',fontWeight:700,transition:'all 0.15s'}}>{t.label}</button>
+            ))}
+          </div>
+
+          {rightTab==='effectcontrols' && <EffectControls clip={selectedClipObj}/>}
+
+          {rightTab==='info' && (
+            <div style={{flex:1,padding:'12px',overflowY:'auto'}}>
+              <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'10px'}}>SEQUENCE INFO</div>
+              {[
+                {l:'Sequence',v:'Strike_the_Heavens'},{l:'Duration',v:'00;02;01;22'},
+                {l:'Start TC',v:'00;00;00;00'},{l:'Resolution',v:'1920 × 1080'},
+                {l:'Frame Rate',v:'29.97 fps'},{l:'Audio',v:'48000 Hz Stereo'},
+                {l:'Editing Mode',v:'Desktop'},
+              ].map(r=>(
+                <div key={r.l} style={{display:'flex',justifyContent:'space-between',marginBottom:'7px'}}>
+                  <span style={{fontSize:'10px',color:'var(--text-secondary)'}}>{r.l}</span>
+                  <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'monospace',textAlign:'right',maxWidth:'120px',overflow:'hidden',textOverflow:'ellipsis'}}>{r.v}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Branding footer */}
+          <div style={{padding:'8px 12px',borderTop:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+            <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif'}}><span style={{color:'var(--accent)',fontWeight:700}}>ECLIPSO</span> v1.0 Beta</span>
+            <span style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'monospace'}}>30 fps</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ─── STATUS BAR ─── */}
+      <div style={{height:'22px',flexShrink:0,background:'var(--bg-tertiary)',borderTop:'1px solid var(--border)',display:'flex',alignItems:'center',padding:'0 12px',gap:'16px',zIndex:50}}>
+        <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--yellow)',fontWeight:700}}>{timecode}</span>
+        <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif'}}>Duration: 02:01;22</span>
+        <span style={{fontSize:'9px',color:'var(--text-muted)'}}>In: 00;00;00;00 · Out: 00;02;01;22</span>
+        <div style={{flex:1}}/>
+        {/* Audio level meters */}
+        <div style={{display:'flex',gap:'2px',alignItems:'center'}}>
+          <span style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',marginRight:'3px'}}>L</span>
+          <div style={{width:'60px',height:'6px',background:'var(--border)',borderRadius:'2px',overflow:'hidden'}}>
+            <div style={{width:'72%',height:'100%',background:'linear-gradient(to right,#00FF94,#FFD60A,#FF3B82 90%)'}}/>
+          </div>
+          <div style={{width:'60px',height:'6px',background:'var(--border)',borderRadius:'2px',overflow:'hidden'}}>
+            <div style={{width:'68%',height:'100%',background:'linear-gradient(to right,#00FF94,#FFD60A,#FF3B82 90%)'}}/>
+          </div>
+          <span style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',marginLeft:'3px'}}>R</span>
+        </div>
+        <div style={{display:'flex',gap:'8px'}}>
+          <span style={{fontSize:'9px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>29.97 fps</span>
+          <span style={{fontSize:'9px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>1920×1080</span>
+          <span style={{fontSize:'9px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>Zoom: {Math.round(zoom*100)}%</span>
+        </div>
+      </div>
+
+      {showExport && <ExportModal onClose={()=>setShowExport(false)}/>}
+      {notification && <div style={{position:'fixed',bottom:'30px',left:'50%',transform:'translateX(-50%)',zIndex:2000,padding:'9px 18px',borderRadius:'9px',background:'var(--bg-card)',border:'1px solid var(--accent)',fontSize:'12px',fontFamily:'Syne,sans-serif',fontWeight:600,color:'var(--accent)',boxShadow:'0 8px 30px rgba(0,0,0,0.5)',animation:'fadeInUp 0.3s ease',whiteSpace:'nowrap'}}>✓ {notification}</div>}
+    </div>
+  );
+}
