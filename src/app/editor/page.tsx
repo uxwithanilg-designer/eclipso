@@ -998,7 +998,10 @@ export default function EditorPage() {
   const [notification,setNotification] = useState<string|null>(null);
   const [isMobile,setIsMobile]         = useState(false);
   const [leftWidth]                    = useState(260);
-  const tlRef = useRef<HTMLDivElement>(null);
+  const [razorLinePos, setRazorLinePos] = useState<number|null>(null);
+  const tlRef           = useRef<HTMLDivElement>(null);
+  const tracksAreaRef   = useRef<HTMLDivElement>(null);
+  const historyRef      = useRef<Clip[][]>([]);
 
   useEffect(()=>{
     const check=()=>setIsMobile(window.innerWidth<768);
@@ -1008,6 +1011,29 @@ export default function EditorPage() {
   },[]);
 
   const notify=(msg:string)=>{setNotification(msg);setTimeout(()=>setNotification(null),2500);};
+
+  // ── KEYBOARD SHORTCUTS: V=Select, C=Razor, Ctrl+Z=Undo ──
+  useEffect(()=>{
+    const onKey=(e:KeyboardEvent)=>{
+      if(e.target instanceof HTMLInputElement||e.target instanceof HTMLTextAreaElement||e.target instanceof HTMLSelectElement) return;
+      if(!e.ctrlKey&&!e.metaKey){
+        if(e.key==='v'||e.key==='V'){ setActiveTool('select'); setRazorLinePos(null); }
+        if(e.key==='c'||e.key==='C'){ setActiveTool('razor'); }
+      }
+      if((e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')){
+        e.preventDefault();
+        if(historyRef.current.length===0) return;
+        const stack=[...historyRef.current];
+        const prev=stack.pop()!;
+        historyRef.current=stack;
+        setClips(prev);
+        setNotification('↩ Undo');
+        setTimeout(()=>setNotification(null),2000);
+      }
+    };
+    window.addEventListener('keydown',onKey);
+    return ()=>window.removeEventListener('keydown',onKey);
+  },[]);
 
   const handleImportMedia=(label:string)=>{
     setClips(p=>[...p,{id:Date.now(),trackId:3,start:380,width:130,label,color:'#9966FF',type:'video'}]);
@@ -1021,6 +1047,33 @@ export default function EditorPage() {
     if(!tlRef.current) return;
     const r=tlRef.current.getBoundingClientRect();
     setPlayheadPos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
+  };
+
+  // ── RAZOR: split clip at click position ──
+  const handleRazorSplit=(e:React.MouseEvent,clip:Clip)=>{
+    e.stopPropagation();
+    if(!tlRef.current) return;
+    const r=tlRef.current.getBoundingClientRect();
+    const pct=((e.clientX-r.left)/r.width)*100;
+    // Convert screen % → timeline unit (reverse of clip.start*zoom*0.14)
+    const splitUnit=Math.round(pct/(zoom*0.14));
+    if(splitUnit<=clip.start||splitUnit>=(clip.start+clip.width)) return;
+    // Push to undo history
+    historyRef.current=[...historyRef.current.slice(-30),[...clips]];
+    const id1=Date.now(), id2=id1+1;
+    const left:Clip ={...clip,id:id1,width:splitUnit-clip.start};
+    const right:Clip={...clip,id:id2,start:splitUnit,width:(clip.start+clip.width)-splitUnit};
+    setClips(prev=>prev.filter(c=>c.id!==clip.id).concat([left,right]));
+    setActiveTool('select');
+    setSelectedClip(id1);
+    notify('✂ Clip split · Ctrl+Z to undo');
+  };
+
+  // ── RAZOR: track cursor for red line indicator ──
+  const handleTracksMouseMove=(e:React.MouseEvent<HTMLDivElement>)=>{
+    if(activeTool!=='razor'||!tlRef.current){ if(razorLinePos!==null) setRazorLinePos(null); return; }
+    const r=tlRef.current.getBoundingClientRect();
+    setRazorLinePos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
   };
 
   const selectedClipObj = clips.find(c=>c.id===selectedClip);
@@ -1298,7 +1351,7 @@ export default function EditorPage() {
                 </div>
 
                 {/* Tracks */}
-                <div onClick={handleTLClick} style={{position:'relative'}}>
+                <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
                   {tracks.map(track=>(
                     <div key={track.id} style={{height:`${track.height}px`,borderBottom:'1px solid var(--border)',background:track.type==='video'?'rgba(124,92,255,0.015)':track.type==='caption'?'rgba(255,214,10,0.015)':'rgba(0,229,255,0.015)',position:'relative',cursor:activeTool==='razor'?'crosshair':'pointer',flexShrink:0}}>
                       {/* Beat grid */}
@@ -1318,7 +1371,12 @@ export default function EditorPage() {
 
                       {/* Clips on this track */}
                       {clips.filter(c=>c.trackId===track.id).map(clip=>(
-                        <div key={clip.id} onClick={e=>{e.stopPropagation();setSelectedClip(clip.id===selectedClip?null:clip.id);}} style={{
+                        <div key={clip.id}
+                          onClick={e=>{
+                            if(activeTool==='razor'){ handleRazorSplit(e,clip); }
+                            else{ e.stopPropagation(); setSelectedClip(clip.id===selectedClip?null:clip.id); }
+                          }}
+                          style={{
                           position:'absolute',
                           left:`${clip.start*zoom*0.14}%`,
                           width:`${clip.width*zoom*0.14}%`,
@@ -1352,6 +1410,13 @@ export default function EditorPage() {
                           <div style={{position:'absolute',right:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to left,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
                         </div>
                       ))}
+
+                      {/* ── RAZOR LINE ── */}
+                      {activeTool==='razor'&&razorLinePos!==null&&(
+                        <div style={{position:'absolute',left:`${razorLinePos}%`,top:0,bottom:0,width:'2px',background:'rgba(255,59,82,0.95)',zIndex:25,pointerEvents:'none',transform:'translateX(-50%)',boxShadow:'0 0 10px rgba(255,59,82,0.7)',transition:'left 0.02s linear'}}>
+                          <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',fontSize:'14px',lineHeight:1,userSelect:'none',filter:'drop-shadow(0 0 6px rgba(255,59,82,1))'}}>✂</div>
+                        </div>
+                      )}
 
                       {/* Playhead line */}
                       <div style={{position:'absolute',left:`${playheadPos}%`,top:0,bottom:0,width:'1px',background:'var(--yellow)',opacity:0.85,zIndex:8,pointerEvents:'none',boxShadow:'0 0 4px rgba(255,214,10,0.4)'}}/>
