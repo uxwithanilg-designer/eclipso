@@ -14,6 +14,17 @@ type Track = { id:number; type:'video'|'audio'|'caption'; label:string; color:st
 type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number };
 type Marker = { id:number; time:number; label:string; color:string };
 
+export interface ProjectFile {
+  id: string;
+  name: string;
+  type: 'video' | 'audio' | 'image';
+  duration?: number;
+  color: string;
+  url: string;
+  thumbnailUrl?: string;
+  hasAudio?: boolean;
+}
+
 // ═══════════════════════════════════════════════════
 //  CONSTANTS
 // ═══════════════════════════════════════════════════
@@ -143,17 +154,7 @@ function initTracks(): Track[] {
 }
 
 function initClips(): Clip[] {
-  return [
-    {id:1,  trackId:3, start:0,   width:185, label:'Strike_the_H.mp4',  color:'#9966FF', type:'video'},
-    {id:2,  trackId:3, start:205, width:145, label:'Thunder_Ben.mp4',   color:'#9966FF', type:'video', speed:200},
-    {id:3,  trackId:3, start:370, width:105, label:'Thunder_at.mp4',    color:'#9966FF', type:'video', proxy:true},
-    {id:4,  trackId:2, start:80,  width:205, label:'Overlay.mp4',       color:'#7C5CFF', type:'video'},
-    {id:8,  trackId:1, start:150, width:120, label:'B-Roll_sky.mp4',    color:'#5566EE', type:'video'},
-    {id:5,  trackId:4, start:0,   width:475, label:'Thunder_Audio.wav', color:'#00E5FF', type:'audio'},
-    {id:6,  trackId:5, start:40,  width:390, label:'BG_Music.wav',      color:'#00FF94', type:'audio'},
-    {id:9,  trackId:5, start:430, width:120, label:'Midnight Pulse',    color:'#7C5CFF', type:'audio'},
-    {id:7,  trackId:6, start:0,   width:475, label:'Ambient.wav',       color:'#FF3B82', type:'audio'},
-  ];
+  return [];
 }
 
 function initMarkers(): Marker[] {
@@ -182,14 +183,9 @@ function ClipWave({color, n=30}:{color:string; n?:number}) {
 // ═══════════════════════════════════════════════════
 
 // — MEDIA PANEL —
-function PanelMedia({onImport, onDragStartItem, onDoubleClickItem}:{onImport:(l:string)=>void, onDragStartItem?:(e:React.DragEvent, item:any)=>void, onDoubleClickItem?:(item:any)=>void}) {
+function PanelMedia({files, onUploadClick, onImport, onDragStartItem, onDoubleClickItem}:{files:ProjectFile[], onUploadClick:()=>void, onImport:(f:ProjectFile|string)=>void, onDragStartItem?:(e:React.DragEvent, item:any)=>void, onDoubleClickItem?:(item:any)=>void}) {
   const bins = ['All Media','Video','Audio','Images','B-Roll'];
   const [bin,setBin] = useState('All Media');
-  const files = [
-    {n:'Strike_the_H.mp4',t:'Video',d:'2:01',c:'#9966FF'},{n:'Thunder_Ben.mp4',t:'Video',d:'0:31',c:'#7C5CFF'},
-    {n:'Thunder_at_.mp4', t:'Video',d:'0:29',c:'#9966FF'},{n:'Thunder_Audio.wav',t:'Audio',d:'2:24',c:'#00E5FF'},
-    {n:'Intro_Title.png', t:'Image',d:'',   c:'#00FF94'},{n:'B-Roll_sky.mp4',t:'Video',d:'1:12',c:'#5566EE'},
-  ];
   return (
     <div>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
@@ -203,30 +199,38 @@ function PanelMedia({onImport, onDragStartItem, onDoubleClickItem}:{onImport:(l:
         ))}
       </div>
       {/* Import drop zone */}
-      <div style={{border:'2px dashed var(--border)',borderRadius:'10px',padding:'12px',textAlign:'center',marginBottom:'10px',cursor:'pointer',transition:'all 0.2s'}}
+      <div onClick={onUploadClick} style={{border:'2px dashed var(--border)',borderRadius:'10px',padding:'12px',textAlign:'center',marginBottom:'10px',cursor:'pointer',transition:'all 0.2s'}}
         onMouseEnter={e=>(e.currentTarget.style.borderColor='var(--accent)')}
         onMouseLeave={e=>(e.currentTarget.style.borderColor='var(--border)')}
       >
         <div style={{fontSize:'18px',marginBottom:'4px'}}>+</div>
-        <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Drop or Ctrl+I to import</div>
+        <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Click or Ctrl+I to import</div>
       </div>
       {/* File list */}
       <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
+        {files.length === 0 && <div style={{fontSize:'10px',color:'var(--text-muted)',textAlign:'center',padding:'10px'}}>No files imported</div>}
         {files.map((f,i)=>(
-          <div key={i} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.t==='Video'?'video':'audio', label:f.n, color:f.c})} onDoubleClick={()=>onDoubleClickItem ? onDoubleClickItem({type:f.t==='Video'?'video':'audio', label:f.n, color:f.c, duration: 150}) : onImport(f.n)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s'}}
+          <div key={f.id} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.type, label:f.name, color:f.color, duration: f.duration})} onDoubleClick={()=>onDoubleClickItem ? onDoubleClickItem({type:f.type, label:f.name, color:f.color, duration: f.duration}) : onImport(f)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s',position:'relative'}}
             onMouseEnter={e=>e.currentTarget.style.borderColor='var(--border-bright)'}
             onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
           >
-            <div style={{width:'32px',height:'24px',borderRadius:'4px',background:`${f.c}20`,border:`1px solid ${f.c}40`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <div style={{display:'flex',gap:'1px',alignItems:'center'}}>
-                {[3,5,4,6,4,3].map((h,k)=><div key={k} style={{width:'2px',height:`${h*3}px`,background:f.c,borderRadius:'1px',opacity:0.7}}/>)}
-              </div>
+            <div style={{width:'36px',height:'24px',borderRadius:'4px',background:`${f.color}20`,border:`1px solid ${f.color}40`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,overflow:'hidden',position:'relative'}}>
+              {f.thumbnailUrl ? (
+                <img src={f.thumbnailUrl} alt={f.name} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+              ) : f.type === 'audio' ? (
+                <div style={{display:'flex',gap:'1px',alignItems:'center'}}>{[3,5,4,6,4,3].map((h,k)=><div key={k} style={{width:'2px',height:`${h*3}px`,background:f.color,borderRadius:'1px',opacity:0.7}}/>)}</div>
+              ) : null}
+              {f.hasAudio && f.type === 'video' && (
+                <div style={{position:'absolute',bottom:'2px',right:'2px',display:'flex',gap:'1px',opacity:0.9}}>
+                   {[2,3,2,4].map((h,k)=><div key={k} style={{width:'1.5px',height:`${h*1.5}px`,background:'white',borderRadius:'1px'}}/>)}
+                </div>
+              )}
             </div>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:'11px',fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.n}</div>
-              <div style={{fontSize:'9px',color:'var(--text-secondary)'}}>{f.t}{f.d?` · ${f.d}`:''}</div>
+              <div style={{fontSize:'11px',fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.name}</div>
+              <div style={{fontSize:'9px',color:'var(--text-secondary)'}}>{f.type}{f.duration ? ` · ${Math.round(f.duration/15)}s` : ''}</div>
             </div>
-            <button onClick={()=>onImport(f.n)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px',flexShrink:0}}>▶</button>
+            <button onClick={()=>onImport(f)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px',flexShrink:0}}>▶</button>
           </div>
         ))}
       </div>
@@ -1000,6 +1004,14 @@ export default function EditorPage() {
   const [leftWidth]                    = useState(260);
   const [razorLinePos, setRazorLinePos] = useState<number|null>(null);
   
+  // Snapping State
+  const [snappingEnabled, setSnappingEnabled] = useState(true);
+  const [snapLineUnits, setSnapLineUnits]     = useState<number|null>(null);
+  
+  // File Management State
+  const [projectFiles, setProjectFiles]       = useState<ProjectFile[]>([]);
+  const fileInputRef                          = useRef<HTMLInputElement>(null);
+  
   // Source Monitor State
   const [sourceClip, setSourceClip] = useState<{label:string, color:string, type:'video'|'audio', duration:number}|null>(null);
   const [sourcePlayheadPct, setSourcePlayheadPct] = useState(0);
@@ -1041,6 +1053,7 @@ export default function EditorPage() {
         if(e.key==='v'||e.key==='V'){ setActiveTool('select'); setRazorLinePos(null); }
         if(e.key==='c'||e.key==='C'){ setActiveTool('razor'); }
         if(e.key==='b'||e.key==='B'){ setActiveTool('ripple'); setRazorLinePos(null); }
+        if(e.key==='s'||e.key==='S'){ setSnappingEnabled(p=>!p); notify(snappingEnabled?'🧲 Snapping Off':'🧲 Snapping On'); }
         if(e.key==='i'||e.key==='I'){ setSourceInPct(sourceStateRef.current.playhead); }
         if(e.key==='o'||e.key==='O'){ setSourceOutPct(sourceStateRef.current.playhead); }
         if(e.key==='Delete'||e.key==='Backspace') {
@@ -1064,24 +1077,95 @@ export default function EditorPage() {
            }
         }
       }
-      if((e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')){
+      if((e.ctrlKey||e.metaKey)&&(e.key==='i'||e.key==='I')){
         e.preventDefault();
-        if(historyRef.current.length===0) return;
-        const stack=[...historyRef.current];
-        const prev=stack.pop()!;
-        historyRef.current=stack;
-        setClips(prev);
-        setNotification('↩ Undo');
-        setTimeout(()=>setNotification(null),2000);
+        fileInputRef.current?.click();
       }
     };
     window.addEventListener('keydown',onKey);
     return ()=>window.removeEventListener('keydown',onKey);
   },[]);
 
-  const handleImportMedia=(label:string)=>{
-    setClips(p=>[...p,{id:Date.now(),trackId:3,start:380,width:130,label,color:'#9966FF',type:'video'}]);
-    notify(`"${label}" added to V1`);
+  const handleProcessUploadedFiles = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const newFiles: ProjectFile[] = [];
+    
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      const url = URL.createObjectURL(file);
+      const isVideo = file.type.startsWith('video/');
+      const isAudio = file.type.startsWith('audio/');
+      const isImage = file.type.startsWith('image/');
+      
+      if (!isVideo && !isAudio && !isImage) continue;
+
+      let type: 'video' | 'audio' | 'image' = isVideo ? 'video' : isAudio ? 'audio' : 'image';
+      let color = isVideo ? '#9966FF' : isAudio ? '#00E5FF' : '#FFD60A';
+      let duration = 150; // default timeline units
+      let thumbnailUrl = '';
+      
+      if (isVideo) {
+        const video = document.createElement('video');
+        video.src = url;
+        video.muted = true;
+        video.crossOrigin = 'anonymous';
+        await new Promise<void>((resolve) => {
+          video.onloadeddata = () => {
+            duration = Math.max(30, Math.round(video.duration * 15)); 
+            video.currentTime = Math.min(1, video.duration / 2); // get frame at 1s
+          };
+          video.onseeked = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 160;
+            canvas.height = 90;
+            const ctx = canvas.getContext('2d');
+            if (ctx) ctx.drawImage(video, 0, 0, 160, 90);
+            thumbnailUrl = canvas.toDataURL('image/jpeg');
+            resolve();
+          };
+          video.onerror = () => resolve(); 
+        });
+      } else if (isAudio) {
+        const audio = document.createElement('audio');
+        audio.src = url;
+        await new Promise<void>((resolve) => {
+          audio.onloadedmetadata = () => {
+             duration = Math.max(30, Math.round(audio.duration * 15));
+             resolve();
+          };
+          audio.onerror = () => resolve();
+        });
+      } else if (isImage) {
+        thumbnailUrl = url;
+        duration = 75; // 5 seconds roughly
+      }
+      
+      newFiles.push({
+        id: Date.now().toString() + i,
+        name: file.name,
+        type,
+        duration,
+        color,
+        url,
+        thumbnailUrl,
+        hasAudio: isVideo || isAudio 
+      });
+    }
+    
+    if (newFiles.length) {
+      setProjectFiles(prev => [...prev, ...newFiles]);
+      notify(`Imported ${newFiles.length} file(s)`);
+    }
+  };
+
+  const handleImportMedia=(f:ProjectFile|string)=>{
+    let label = typeof f === 'string' ? f : f.name;
+    let color = typeof f === 'string' ? '#9966FF' : f.color;
+    let type = typeof f === 'string' ? 'video' : f.type;
+    let trackId = type === 'audio' ? 4 : 3;
+    let width = typeof f === 'string' ? 130 : f.duration || 150;
+    setClips(p=>[...p,{id:Date.now(),trackId,start: playheadPos/(zoom*0.14) || 0,width,label,color,type:type as 'video'|'audio'}]);
+    notify(`"${label}" added to timeline`);
   };
   const handleImportTrack=(t:typeof MUSIC_TRACKS_DATA[0])=>{
     setClips(p=>[...p,{id:Date.now(),trackId:5,start:0,width:420,label:`${t.title} — ${t.artist}`,color:t.accent,type:'audio'}]);
@@ -1179,6 +1263,7 @@ export default function EditorPage() {
     const onUp=()=>{ 
        setDragState(null); setDragNewState(null); setDragNewPos(null); setDragOverTrackId(null);
        setEdgeDragState(null); setTrimTooltip(null);
+       setSnapLineUnits(null);
     };
     window.addEventListener('mouseup',onUp);
     return ()=>window.removeEventListener('mouseup',onUp);
@@ -1348,8 +1433,56 @@ export default function EditorPage() {
       // Horizontal position
       const r=tlRef.current.getBoundingClientRect();
       const deltaUnits=Math.abs(dx)>2?Math.round((dx/r.width)*100/(zoom*0.14)):0;
-      const newStart=Math.max(0,dragState.startStart+deltaUnits);
+      let newStart=Math.max(0,dragState.startStart+deltaUnits);
 
+      // Find the dragged clip to check its type
+      const draggedClip=clips.find(c=>c.id===dragState.clipId);
+      if(!draggedClip) return;
+
+      if(snappingEnabled) {
+        const thresholdUnits = (8 * 100) / (r.width * zoom * 0.14);
+        const sequenceEnd = Math.max(0, ...clips.map(c => c.start + c.width));
+        const playheadUnits = playheadPos / (zoom * 0.14);
+        const otherClips = clips.filter(c => c.id !== dragState.clipId);
+        
+        const candidatePoints = [
+           0,
+           sequenceEnd,
+           playheadUnits,
+           ...otherClips.map(c => c.start),
+           ...otherClips.map(c => c.start + c.width)
+        ];
+        
+        let bestDist = Infinity;
+        let bestSnapUnit: number|null = null;
+        let startShift = 0;
+        
+        for (const p of candidatePoints) {
+           const leftDist = Math.abs(p - newStart);
+           if (leftDist < bestDist && leftDist <= thresholdUnits) {
+              bestDist = leftDist;
+              bestSnapUnit = p;
+              startShift = p - newStart;
+           }
+           const rightDist = Math.abs(p - (newStart + draggedClip.width));
+           if (rightDist < bestDist && rightDist <= thresholdUnits) {
+              bestDist = rightDist;
+              bestSnapUnit = p;
+              startShift = p - (newStart + draggedClip.width);
+           }
+        }
+        
+        if (bestSnapUnit !== null) {
+           newStart += startShift;
+           setSnapLineUnits(bestSnapUnit);
+        } else {
+           setSnapLineUnits(null);
+        }
+      } else {
+        setSnapLineUnits(null);
+      }
+
+      // Determine valid target trackId
       // Vertical: which track is cursor over?
       const areaRect=tracksAreaRef.current.getBoundingClientRect();
       let relY=e.clientY-areaRect.top;
@@ -1358,12 +1491,7 @@ export default function EditorPage() {
         if(relY<t.height){ targetTrack=t; break; }
         relY-=t.height;
       }
-
-      // Find the dragged clip to check its type
-      const draggedClip=clips.find(c=>c.id===dragState.clipId);
-      if(!draggedClip) return;
-
-      // Determine valid target trackId
+      
       let newTrackId=draggedClip.trackId;
       if(targetTrack&&targetTrack.type!=='caption'&&targetTrack.type===draggedClip.type){
         newTrackId=targetTrack.id;
@@ -1399,7 +1527,7 @@ export default function EditorPage() {
   // Desktop
   return (
     <div style={{height:'100vh',display:'flex',flexDirection:'column',background:'var(--bg-primary)',overflow:'hidden',userSelect:'none'}}>
-
+      <input type="file" ref={fileInputRef} multiple accept="video/*,audio/*,image/*" style={{display:'none'}} onChange={e=>handleProcessUploadedFiles(e.target.files)} />
       {/* ─── TOP MENU BAR ─── */}
       <div style={{height:'38px',flexShrink:0,background:'var(--bg-tertiary)',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',padding:'0 14px',gap:'0',zIndex:50}}>
         <Link href="/" style={{display:'flex',alignItems:'center',gap:'6px',textDecoration:'none',marginRight:'18px'}}>
@@ -1476,7 +1604,7 @@ export default function EditorPage() {
           </div>
           {/* Panel content */}
           <div style={{flex:1,overflowY:'auto',padding:'12px'}}>
-            {leftTab==='media'       && <PanelMedia   onImport={handleImportMedia} onDragStartItem={handleDragStartNewItem} onDoubleClickItem={handleOpenSource}/>}
+            {leftTab==='media'       && <PanelMedia files={projectFiles} onUploadClick={()=>fileInputRef.current?.click()} onImport={handleImportMedia} onDragStartItem={handleDragStartNewItem} onDoubleClickItem={handleOpenSource}/>}
             {leftTab==='library'     && <PanelLibrary onImport={handleImportTrack} onDragStartItem={handleDragStartNewItem}/>}
             {leftTab==='effects'     && <PanelEffects/>}
             {leftTab==='transitions' && <PanelTransitions/>}
@@ -1630,9 +1758,9 @@ export default function EditorPage() {
                   {ic:'🧲',tip:'Snapping (S)'},
                   {ic:'🔗',tip:'Linked Selection'},
                 ].map(b=>(
-                  <button key={b.ic} title={b.tip} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'12px',padding:'2px 4px',borderRadius:'3px',transition:'all 0.15s'}}
-                    onMouseEnter={e=>e.currentTarget.style.background='var(--bg-hover)'}
-                    onMouseLeave={e=>e.currentTarget.style.background='none'}
+                  <button key={b.ic} title={b.tip} onClick={()=>{ if(b.ic==='🧲') { setSnappingEnabled(!snappingEnabled); notify(!snappingEnabled?'🧲 Snapping On':'🧲 Snapping Off'); } }} style={{background:b.ic==='🧲'&&snappingEnabled?'var(--accent)':'none',border:'none',color:b.ic==='🧲'&&snappingEnabled?'white':'var(--text-secondary)',cursor:'pointer',fontSize:'12px',padding:'2px 4px',borderRadius:'3px',transition:'all 0.15s'}}
+                    onMouseEnter={e=>e.currentTarget.style.background=(b.ic==='🧲'&&snappingEnabled)?'var(--accent)':'var(--bg-hover)'}
+                    onMouseLeave={e=>e.currentTarget.style.background=(b.ic==='🧲'&&snappingEnabled)?'var(--accent)':'none'}
                   >{b.ic}</button>
                 ))}
               </div>
@@ -1874,6 +2002,13 @@ export default function EditorPage() {
                       {activeTool==='razor'&&razorLinePos!==null&&(
                         <div style={{position:'absolute',left:`${razorLinePos}%`,top:0,bottom:0,width:'2px',background:'rgba(255,59,82,0.95)',zIndex:25,pointerEvents:'none',transform:'translateX(-50%)',boxShadow:'0 0 10px rgba(255,59,82,0.7)',transition:'left 0.02s linear'}}>
                           <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',fontSize:'14px',lineHeight:1,userSelect:'none',filter:'drop-shadow(0 0 6px rgba(255,59,82,1))'}}>✂</div>
+                        </div>
+                      )}
+
+                      {/* ── SNAP LINE ── */}
+                      {snapLineUnits!==null&&(
+                        <div style={{position:'absolute',left:`${snapLineUnits*zoom*0.14}%`,top:0,bottom:0,width:'1.5px',background:'var(--yellow)',zIndex:24,pointerEvents:'none',boxShadow:'0 0 8px rgba(255,214,10,0.6)'}}>
+                          <div style={{position:'absolute',top:0,left:'50%',transform:'translate(-50%, -50%)',width:0,height:0,borderLeft:'5px solid transparent',borderRight:'5px solid transparent',borderTop:'6px solid var(--yellow)'}}/>
                         </div>
                       )}
 
