@@ -11,7 +11,7 @@ type RightTab = 'effectcontrols'|'info';
 type Workspace = 'editing'|'color'|'audio'|'effects'|'all';
 type MobileTab = 'videos'|'music'|'titles'|null;
 type Track = { id:number; type:'video'|'audio'|'caption'; label:string; color:string; muted:boolean; solo:boolean; locked:boolean; height:number };
-type Clip  = { id:number; trackId:number; start:number; width:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number };
+type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number };
 type Marker = { id:number; time:number; label:string; color:string };
 
 // ═══════════════════════════════════════════════════
@@ -182,7 +182,7 @@ function ClipWave({color, n=30}:{color:string; n?:number}) {
 // ═══════════════════════════════════════════════════
 
 // — MEDIA PANEL —
-function PanelMedia({onImport}:{onImport:(l:string)=>void}) {
+function PanelMedia({onImport, onDragStartItem}:{onImport:(l:string)=>void, onDragStartItem?:(e:React.DragEvent, item:any)=>void}) {
   const bins = ['All Media','Video','Audio','Images','B-Roll'];
   const [bin,setBin] = useState('All Media');
   const files = [
@@ -213,7 +213,7 @@ function PanelMedia({onImport}:{onImport:(l:string)=>void}) {
       {/* File list */}
       <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
         {files.map((f,i)=>(
-          <div key={i} onDoubleClick={()=>onImport(f.n)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+          <div key={i} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.t==='Video'?'video':'audio', label:f.n, color:f.c})} onDoubleClick={()=>onImport(f.n)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s'}}
             onMouseEnter={e=>e.currentTarget.style.borderColor='var(--border-bright)'}
             onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
           >
@@ -235,7 +235,7 @@ function PanelMedia({onImport}:{onImport:(l:string)=>void}) {
 }
 
 // — LIBRARY PANEL —
-function PanelLibrary({onImport}:{onImport:(t:typeof MUSIC_TRACKS_DATA[0])=>void}) {
+function PanelLibrary({onImport, onDragStartItem}:{onImport:(t:typeof MUSIC_TRACKS_DATA[0])=>void, onDragStartItem?:(e:React.DragEvent, item:any)=>void}) {
   const [q,setQ]=useState('');
   const filtered = MUSIC_TRACKS_DATA.filter(t=>t.title.toLowerCase().includes(q.toLowerCase()));
   return (
@@ -244,7 +244,7 @@ function PanelLibrary({onImport}:{onImport:(t:typeof MUSIC_TRACKS_DATA[0])=>void
       <input value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Search 1000+ tracks..." style={{width:'100%',padding:'7px 10px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-primary)',fontSize:'11px',outline:'none',marginBottom:'8px'}}/>
       <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
         {filtered.map(t=>(
-          <div key={t.id} style={{padding:'9px 10px',borderRadius:'9px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'pointer',transition:'all 0.15s'}}
+          <div key={t.id} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:'audio', label:t.title, color:t.accent, duration: 150})} style={{padding:'9px 10px',borderRadius:'9px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s'}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.background=`${t.accent}0e`;}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--bg-secondary)';}}
           >
@@ -1000,7 +1000,11 @@ export default function EditorPage() {
   const [leftWidth]                    = useState(260);
   const [razorLinePos, setRazorLinePos] = useState<number|null>(null);
   const [dragState, setDragState]       = useState<{clipId:number;startX:number;startStart:number}|null>(null);
+  const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number}|null>(null);
+  const [dragNewPos, setDragNewPos]     = useState<{trackId:number, start:number}|null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<number|null>(null);
+  const [edgeDragState, setEdgeDragState] = useState<{clipId:number, edge:'left'|'right', startX:number, initialStart:number, initialWidth:number, sourceWidth:number}|null>(null);
+  const [trimTooltip, setTrimTooltip]     = useState<{x:number, y:number, text:string}|null>(null);
   const tlRef           = useRef<HTMLDivElement>(null);
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
   const historyRef      = useRef<Clip[][]>([]);
@@ -1074,13 +1078,153 @@ export default function EditorPage() {
 
   // ── DRAG: global mouse-up ends clip drag ──
   useEffect(()=>{
-    const onUp=()=>{ setDragState(null); setDragOverTrackId(null); };
+    const onUp=()=>{ 
+       setDragState(null); setDragNewState(null); setDragNewPos(null); setDragOverTrackId(null);
+       setEdgeDragState(null); setTrimTooltip(null);
+    };
     window.addEventListener('mouseup',onUp);
     return ()=>window.removeEventListener('mouseup',onUp);
   },[]);
 
-  // ── RAZOR line + MOVE/CROSS-TRACK drag ──
+  // ── NEW CLIP DRAG START ──
+  const handleDragStartNewItem = (e:React.DragEvent, item:{type:'video'|'audio', label:string, color:string, duration?:number}) => {
+    e.dataTransfer.setData('text/plain', item.label); // necessary for HTML5 drag
+    e.dataTransfer.effectAllowed = 'copy';
+    setDragNewState(item);
+  };
+
+  // ── NEW CLIP DRAG OVER (GHOST) ──
+  const handleDragOver = (e:React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); // allow drop
+    if (!dragNewState || !tracksAreaRef.current || !tlRef.current) return;
+    const r=tlRef.current.getBoundingClientRect();
+    const pct=((e.clientX-r.left)/r.width)*100;
+    const newStart=Math.max(0, Math.round(pct/(zoom*0.14)));
+
+    const areaRect=tracksAreaRef.current.getBoundingClientRect();
+    let relY=e.clientY-areaRect.top;
+    let targetTrack:Track|null=null;
+    for(const t of tracks){
+      if(relY<t.height){ targetTrack=t; break; }
+      relY-=t.height;
+    }
+
+    if (targetTrack && targetTrack.type !== 'caption' && targetTrack.type === dragNewState.type) {
+       setDragNewPos({ trackId: targetTrack.id, start: newStart });
+       setDragOverTrackId(targetTrack.id);
+    } else if (dragNewState.type === 'audio') {
+       const firstAudio = tracks.find(t=>t.type==='audio');
+       if(firstAudio) {
+          setDragNewPos({ trackId: firstAudio.id, start: newStart });
+          setDragOverTrackId(firstAudio.id);
+       }
+    } else {
+       setDragNewPos(null);
+       setDragOverTrackId(null);
+    }
+  };
+
+  // ── NEW CLIP DROP ──
+  const handleDrop = (e:React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOverTrackId(null);
+    if (!dragNewState || !dragNewPos) {
+       setDragNewState(null);
+       setDragNewPos(null);
+       return;
+    }
+    
+    // push to undo stack
+    historyRef.current=[...historyRef.current.slice(-30),[...clips]];
+    
+    const w = dragNewState.duration || 100; // default duration
+    const finalStart = dragNewPos.start;
+    
+    // Check overlap
+    const overlaps = clips.filter(c => c.trackId === dragNewPos.trackId && 
+                                  ((finalStart >= c.start && finalStart < c.start + c.width) ||
+                                   (c.start >= finalStart && c.start < finalStart + w) ||
+                                   (finalStart <= c.start && finalStart + w >= c.start + c.width)));
+    let newClips = [...clips];
+    if (overlaps.length > 0) {
+       // Ripple push later clips
+       const pushAmount = w;
+       newClips = newClips.map(c => 
+         (c.trackId === dragNewPos.trackId && c.start + c.width/2 >= finalStart) 
+            ? { ...c, start: c.start + pushAmount } 
+            : c
+       );
+    }
+
+    const newClip: Clip = {
+       id: Date.now(),
+       trackId: dragNewPos.trackId,
+       start: finalStart,
+       width: w,
+       label: dragNewState.label,
+       color: dragNewState.color,
+       type: dragNewState.type as 'video'|'audio'
+    };
+
+    setClips([...newClips, newClip]);
+    setDragNewState(null);
+    setDragNewPos(null);
+    setSelectedClip(newClip.id);
+    notify(`Drop: "${newClip.label}" added & snapped`);
+  };
+
+  // ── RAZOR line + MOVE/CROSS-TRACK drag + EDGE TRIMMING ──
   const handleTracksMouseMove=(e:React.MouseEvent<HTMLDivElement>)=>{
+    // –– EDGE DRAG: Trimming clip ––
+    if(edgeDragState && tlRef.current) {
+       const dx = e.clientX - edgeDragState.startX;
+       const r = tlRef.current.getBoundingClientRect();
+       const deltaUnits = Math.round((dx/r.width)*100/(zoom*0.14));
+
+       let newStart = edgeDragState.initialStart;
+       let newWidth = edgeDragState.initialWidth;
+       const minWidth = 15; 
+
+       if (edgeDragState.edge === 'left') {
+          newStart = Math.min(newStart + edgeDragState.initialWidth - minWidth, Math.max(0, edgeDragState.initialStart + deltaUnits));
+          newWidth = (edgeDragState.initialStart + edgeDragState.initialWidth) - newStart;
+       } else {
+          newWidth = Math.max(minWidth, edgeDragState.initialWidth + deltaUnits);
+          if (edgeDragState.sourceWidth && newWidth > edgeDragState.sourceWidth) {
+             newWidth = edgeDragState.sourceWidth;
+          }
+       }
+
+       // Ripple logic
+       const widthDiff = newWidth - edgeDragState.initialWidth; 
+
+       setClips(prev => {
+         const updatedClips = [...prev];
+         const clipIdx = updatedClips.findIndex(c => c.id === edgeDragState.clipId);
+         if (clipIdx === -1) return prev;
+         
+         const oldClip = updatedClips[clipIdx];
+         updatedClips[clipIdx] = {...oldClip, start: newStart, width: newWidth};
+
+         if (activeTool === 'ripple') {
+           // Standard Ripple: downstream clips on the SAME track shift.
+           updatedClips.forEach((c, idx) => {
+             if (idx !== clipIdx && c.trackId === oldClip.trackId && c.start >= edgeDragState.initialStart + edgeDragState.initialWidth - 1) {
+                updatedClips[idx] = {...c, start: Math.max(0, c.start + widthDiff)};
+             }
+           });
+         }
+         return updatedClips;
+       });
+
+       setTrimTooltip({
+         x: e.clientX,
+         y: e.clientY - 40,
+         text: `Dur: ${(newWidth/15).toFixed(1)}s`
+       });
+       return;
+    }
+
     // –– MOVE: drag clip (horizontal + cross-track vertical) ––
     if(dragState&&tlRef.current&&tracksAreaRef.current){
       const dx=e.clientX-dragState.startX;
@@ -1216,8 +1360,8 @@ export default function EditorPage() {
           </div>
           {/* Panel content */}
           <div style={{flex:1,overflowY:'auto',padding:'12px'}}>
-            {leftTab==='media'       && <PanelMedia   onImport={handleImportMedia}/>}
-            {leftTab==='library'     && <PanelLibrary onImport={handleImportTrack}/>}
+            {leftTab==='media'       && <PanelMedia   onImport={handleImportMedia} onDragStartItem={handleDragStartNewItem}/>}
+            {leftTab==='library'     && <PanelLibrary onImport={handleImportTrack} onDragStartItem={handleDragStartNewItem}/>}
             {leftTab==='effects'     && <PanelEffects/>}
             {leftTab==='transitions' && <PanelTransitions/>}
             {leftTab==='color'       && <PanelColor/>}
@@ -1400,20 +1544,20 @@ export default function EditorPage() {
                 </div>
 
                 {/* Tracks */}
-                <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
+                <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} onDragOver={handleDragOver} onDrop={handleDrop} onDragLeave={()=>setDragNewPos(null)} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
                   {tracks.map(track=>(
                     <div key={track.id} style={{
                       height:`${track.height}px`,
                       borderBottom:'1px solid var(--border)',
                       background:
-                        dragOverTrackId===track.id&&dragState
+                        dragOverTrackId===track.id&&(dragState||dragNewState)
                           ? track.type==='video'?'rgba(124,92,255,0.09)'
                             :track.type==='audio'?'rgba(0,229,255,0.09)'
                             :'rgba(255,214,10,0.04)'
                           : track.type==='video'?'rgba(124,92,255,0.015)'
                             :track.type==='caption'?'rgba(255,214,10,0.015)'
                             :'rgba(0,229,255,0.015)',
-                      outline: dragOverTrackId===track.id&&dragState
+                      outline: dragOverTrackId===track.id&&(dragState||dragNewState)
                         ? `2px solid ${track.type==='video'?'rgba(124,92,255,0.45)':'rgba(0,229,255,0.45)'}` : 'none',
                       position:'relative',
                       cursor:activeTool==='razor'?'crosshair':dragState?'grabbing':'pointer',
@@ -1432,6 +1576,26 @@ export default function EditorPage() {
                       {track.type==='caption' && (
                         <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',padding:'0 8px',gap:'8px',pointerEvents:'none'}}>
                           <span style={{fontSize:'8px',color:'rgba(255,214,10,0.3)',fontFamily:'Syne,sans-serif',fontWeight:700,letterSpacing:'1px'}}>CAPTIONS TRACK</span>
+                        </div>
+                      )}
+
+                      {/* ── DRAG NEW CLIP GHOST ── */}
+                      {dragNewPos && dragOverTrackId===track.id && dragNewState && (
+                        <div style={{
+                          position:'absolute',
+                          left:`${dragNewPos.start*zoom*0.14}%`,
+                          width:`${(dragNewState.duration||100)*zoom*0.14}%`,
+                          top: track.type==='caption'?'2px':'4px',
+                          bottom: track.type==='caption'?'2px':'4px',
+                          background:`${dragNewState.color}40`,
+                          border:`1px dashed ${dragNewState.color}`,
+                          borderRadius: track.type==='caption'?'3px':'5px',
+                          zIndex: 20,
+                          pointerEvents: 'none',
+                          display:'flex', alignItems:'center', padding:'0 4px',
+                          overflow:'hidden'
+                        }}>
+                           <span style={{fontSize:'8px',color:dragNewState.color,fontFamily:'Syne,sans-serif',fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{dragNewState.label}</span>
                         </div>
                       )}
 
@@ -1484,6 +1648,24 @@ export default function EditorPage() {
                             </div>
                           )}
                           {/* Transition zone indicator at edges */}
+                          {['select', 'ripple'].includes(activeTool) && (
+                            <>
+                              <div onMouseDown={e=>{
+                                e.stopPropagation();
+                                dragMovedRef.current=false;
+                                historyRef.current=[...historyRef.current.slice(-30),[...clips]];
+                                setEdgeDragState({clipId:clip.id, edge:'left', startX:e.clientX, initialStart:clip.start, initialWidth:clip.width, sourceWidth:clip.sourceWidth||clip.width});
+                                setSelectedClip(clip.id);
+                              }} style={{position:'absolute',left:0,top:0,bottom:0,width:'8px',cursor:'col-resize',zIndex:10}}/>
+                              <div onMouseDown={e=>{
+                                e.stopPropagation();
+                                dragMovedRef.current=false;
+                                historyRef.current=[...historyRef.current.slice(-30),[...clips]];
+                                setEdgeDragState({clipId:clip.id, edge:'right', startX:e.clientX, initialStart:clip.start, initialWidth:clip.width, sourceWidth:clip.sourceWidth||clip.width});
+                                setSelectedClip(clip.id);
+                              }} style={{position:'absolute',right:0,top:0,bottom:0,width:'8px',cursor:'col-resize',zIndex:10}}/>
+                            </>
+                          )}
                           <div style={{position:'absolute',left:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to right,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
                           <div style={{position:'absolute',right:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to left,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
                         </div>
@@ -1503,6 +1685,29 @@ export default function EditorPage() {
                 </div>
               </div>
             </div>
+
+            {/* TRIMMING TOOLTIP */}
+            {trimTooltip && (
+              <div style={{
+                position:'fixed',
+                left:`${trimTooltip.x}px`,
+                top:`${trimTooltip.y}px`,
+                transform:'translateX(-50%)',
+                background:'rgba(0,0,0,0.85)',
+                color:'white',
+                padding:'4px 8px',
+                borderRadius:'4px',
+                fontSize:'10px',
+                fontFamily:'monospace',
+                fontWeight:700,
+                border:'1px solid var(--border-bright)',
+                boxShadow:'0 4px 12px rgba(0,0,0,0.5)',
+                zIndex:1000,
+                pointerEvents:'none'
+              }}>
+                {trimTooltip.text}
+              </div>
+            )}
 
             {/* Timeline footer / transport */}
             <div style={{height:'30px',flexShrink:0,display:'flex',alignItems:'center',padding:'0 10px',gap:'10px',borderTop:'1px solid var(--border)',background:'var(--bg-tertiary)'}}>
