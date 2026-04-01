@@ -182,7 +182,7 @@ function ClipWave({color, n=30}:{color:string; n?:number}) {
 // ═══════════════════════════════════════════════════
 
 // — MEDIA PANEL —
-function PanelMedia({onImport, onDragStartItem}:{onImport:(l:string)=>void, onDragStartItem?:(e:React.DragEvent, item:any)=>void}) {
+function PanelMedia({onImport, onDragStartItem, onDoubleClickItem}:{onImport:(l:string)=>void, onDragStartItem?:(e:React.DragEvent, item:any)=>void, onDoubleClickItem?:(item:any)=>void}) {
   const bins = ['All Media','Video','Audio','Images','B-Roll'];
   const [bin,setBin] = useState('All Media');
   const files = [
@@ -213,7 +213,7 @@ function PanelMedia({onImport, onDragStartItem}:{onImport:(l:string)=>void, onDr
       {/* File list */}
       <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
         {files.map((f,i)=>(
-          <div key={i} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.t==='Video'?'video':'audio', label:f.n, color:f.c})} onDoubleClick={()=>onImport(f.n)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s'}}
+          <div key={i} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.t==='Video'?'video':'audio', label:f.n, color:f.c})} onDoubleClick={()=>onDoubleClickItem ? onDoubleClickItem({type:f.t==='Video'?'video':'audio', label:f.n, color:f.c, duration: 150}) : onImport(f.n)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s'}}
             onMouseEnter={e=>e.currentTarget.style.borderColor='var(--border-bright)'}
             onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
           >
@@ -999,6 +999,13 @@ export default function EditorPage() {
   const [isMobile,setIsMobile]         = useState(false);
   const [leftWidth]                    = useState(260);
   const [razorLinePos, setRazorLinePos] = useState<number|null>(null);
+  
+  // Source Monitor State
+  const [sourceClip, setSourceClip] = useState<{label:string, color:string, type:'video'|'audio', duration:number}|null>(null);
+  const [sourcePlayheadPct, setSourcePlayheadPct] = useState(0);
+  const [sourceInPct, setSourceInPct]     = useState(0);
+  const [sourceOutPct, setSourceOutPct]   = useState(100);
+
   const [dragState, setDragState]       = useState<{clipId:number;startX:number;startStart:number}|null>(null);
   const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number}|null>(null);
   const [dragNewPos, setDragNewPos]     = useState<{trackId:number, start:number}|null>(null);
@@ -1013,6 +1020,9 @@ export default function EditorPage() {
 
   const stateRef = useRef<{clips:Clip[], selectedClip:number|null}>({ clips, selectedClip });
   useEffect(() => { stateRef.current = { clips, selectedClip }; }, [clips, selectedClip]);
+  
+  const sourceStateRef = useRef({ playhead: 0 });
+  useEffect(() => { sourceStateRef.current.playhead = sourcePlayheadPct; }, [sourcePlayheadPct]);
 
   useEffect(()=>{
     const check=()=>setIsMobile(window.innerWidth<768);
@@ -1031,6 +1041,8 @@ export default function EditorPage() {
         if(e.key==='v'||e.key==='V'){ setActiveTool('select'); setRazorLinePos(null); }
         if(e.key==='c'||e.key==='C'){ setActiveTool('razor'); }
         if(e.key==='b'||e.key==='B'){ setActiveTool('ripple'); setRazorLinePos(null); }
+        if(e.key==='i'||e.key==='I'){ setSourceInPct(sourceStateRef.current.playhead); }
+        if(e.key==='o'||e.key==='O'){ setSourceOutPct(sourceStateRef.current.playhead); }
         if(e.key==='Delete'||e.key==='Backspace') {
            const { clips: curClips, selectedClip: curSel } = stateRef.current;
            if (curSel) {
@@ -1075,6 +1087,67 @@ export default function EditorPage() {
     setClips(p=>[...p,{id:Date.now(),trackId:5,start:0,width:420,label:`${t.title} — ${t.artist}`,color:t.accent,type:'audio'}]);
     notify(`"${t.title}" imported to A2`);
   };
+  const handleOpenSource=(item:any)=>{
+    setSourceClip({ label: item.label, type: item.type, color: item.color, duration: item.duration || 150 });
+    setSourcePlayheadPct(0);
+    setSourceInPct(0);
+    setSourceOutPct(100);
+  };
+  const handleSourceInsert = (mode: 'insert' | 'overwrite') => {
+      if (!sourceClip) return;
+      historyRef.current = [...historyRef.current.slice(-30), [...clips]];
+      
+      const inP = Math.min(sourceInPct, sourceOutPct);
+      const outP = Math.max(sourceInPct, sourceOutPct);
+      const widthUnits = Math.max(1, Math.round((outP - inP) / 100 * sourceClip.duration));
+      
+      const targetTrackId = sourceClip.type === 'video' ? 3 : 5;
+      const insertStart = Math.round(playheadPos / (zoom * 0.14));
+      
+      let newClips = [...clips];
+      if (mode === 'insert') {
+         // Push existing clips forward on the target track
+         newClips = newClips.map(c => {
+            if (c.trackId === targetTrackId && c.start >= insertStart) {
+               return { ...c, start: c.start + widthUnits };
+            }
+            return c;
+         });
+      } else {
+         // Overwrite: remove parts of clips that overlap
+         newClips = newClips.filter(c => {
+            if (c.trackId !== targetTrackId) return true;
+            if (c.start >= insertStart && c.start + c.width <= insertStart + widthUnits) return false;
+            return true;
+         }).map(c => {
+            if (c.trackId === targetTrackId) {
+               if (c.start < insertStart && c.start + c.width > insertStart) {
+                  return { ...c, width: insertStart - c.start };
+               }
+               if (c.start >= insertStart && c.start < insertStart + widthUnits) {
+                   const diff = (insertStart + widthUnits) - c.start;
+                   return { ...c, start: c.start + diff, width: Math.max(0, c.width - diff) };
+               }
+            }
+            return c;
+         }).filter(c => c.width > 0);
+      }
+      
+      const newClip: Clip = {
+         id: Date.now(),
+         trackId: targetTrackId,
+         start: insertStart,
+         width: widthUnits,
+         label: sourceClip.label,
+         color: sourceClip.color,
+         type: sourceClip.type,
+         sourceWidth: sourceClip.duration
+      };
+      
+      setClips([...newClips, newClip]);
+      notify(`Source ${mode} completed`);
+  };
+
   const handleTLClick=(e:React.MouseEvent<HTMLDivElement>)=>{
     if(!tlRef.current) return;
     const r=tlRef.current.getBoundingClientRect();
@@ -1403,7 +1476,7 @@ export default function EditorPage() {
           </div>
           {/* Panel content */}
           <div style={{flex:1,overflowY:'auto',padding:'12px'}}>
-            {leftTab==='media'       && <PanelMedia   onImport={handleImportMedia} onDragStartItem={handleDragStartNewItem}/>}
+            {leftTab==='media'       && <PanelMedia   onImport={handleImportMedia} onDragStartItem={handleDragStartNewItem} onDoubleClickItem={handleOpenSource}/>}
             {leftTab==='library'     && <PanelLibrary onImport={handleImportTrack} onDragStartItem={handleDragStartNewItem}/>}
             {leftTab==='effects'     && <PanelEffects/>}
             {leftTab==='transitions' && <PanelTransitions/>}
@@ -1424,30 +1497,71 @@ export default function EditorPage() {
             {/* Source Monitor */}
             <div style={{flex:1,borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column'}}>
               <div style={{padding:'5px 10px',display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
-                <span style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>Source: (no clips)</span>
-                <div style={{display:'flex',gap:'4px'}}>
-                  {['◁','▷'].map((ic,i)=><button key={i} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
-                </div>
+                <span style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'150px'}}>Source: {sourceClip ? sourceClip.label.replace('.mp4','') : '(no clips)'}</span>
+                {sourceClip ? (
+                  <div style={{display:'flex',gap:'4px'}}>
+                    <button title="Insert Range" onClick={()=>handleSourceInsert('insert')} style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--accent)',cursor:'pointer',fontSize:'9px',padding:'3px 6px',borderRadius:'4px',fontFamily:'Syne,sans-serif',fontWeight:700}}>Insert</button>
+                    <button title="Overwrite Range" onClick={()=>handleSourceInsert('overwrite')} style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--pink)',cursor:'pointer',fontSize:'9px',padding:'3px 6px',borderRadius:'4px',fontFamily:'Syne,sans-serif',fontWeight:700}}>Overwrite</button>
+                  </div>
+                ) : (
+                  <div style={{display:'flex',gap:'4px'}}>
+                    {['◁','▷'].map((ic,i)=><button key={i} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
+                  </div>
+                )}
               </div>
+              
               <div style={{flex:1,background:'#050508',display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
-                <div style={{textAlign:'center',color:'var(--text-muted)'}}>
-                  <div style={{fontSize:'28px',marginBottom:'6px',opacity:0.15}}>🎬</div>
-                  <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Double-click clip to preview</div>
-                </div>
+                {sourceClip ? (
+                   <div style={{position:'absolute',inset:'8%',border:'1px solid rgba(255,255,255,0.04)',display:'flex',alignItems:'center',justifyContent:'center',background:`${sourceClip.color}15`,borderRadius:'4px'}}>
+                      <span style={{fontSize:'32px',opacity:0.8}}>{sourceClip.type==='video'?'🎬':'🎵'}</span>
+                   </div>
+                ) : (
+                   <div style={{textAlign:'center',color:'var(--text-muted)'}}>
+                     <div style={{fontSize:'28px',marginBottom:'6px',opacity:0.15}}>🎬</div>
+                     <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Double-click clip to preview</div>
+                   </div>
+                )}
               </div>
+              
+              {/* Source Scrubber */}
+              {sourceClip && (
+                 <div style={{height:'16px',background:'var(--bg-secondary)',borderTop:'1px solid var(--border)',position:'relative',cursor:'pointer'}}
+                   onMouseDown={(e)=>{
+                      const r=e.currentTarget.getBoundingClientRect();
+                      const updatePct = (ev:MouseEvent) => setSourcePlayheadPct(Math.max(0,Math.min(100,((ev.clientX-r.left)/r.width)*100)));
+                      updatePct(e as unknown as MouseEvent);
+                      const move = (ev:MouseEvent) => updatePct(ev);
+                      const up = () => { window.removeEventListener('mousemove',move); window.removeEventListener('mouseup',up); };
+                      window.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+                   }}
+                 >
+                   <div style={{position:'absolute',left:`${Math.min(sourceInPct,sourceOutPct)}%`,width:`${Math.abs(sourceOutPct-sourceInPct)}%`,top:0,bottom:0,background:'rgba(255,255,255,0.1)'}}/>
+                   <div style={{position:'absolute',left:`${sourceInPct}%`,top:0,bottom:0,width:'2px',background:'var(--cyan)',zIndex:2}}>
+                      <div style={{position:'absolute',top:0,left:'-4px',width:'4px',height:'6px',borderLeft:'2px solid var(--cyan)',borderTop:'2px solid var(--cyan)'}}/>
+                   </div>
+                   <div style={{position:'absolute',left:`${sourceOutPct}%`,top:0,bottom:0,width:'2px',background:'var(--pink)',zIndex:2}}>
+                      <div style={{position:'absolute',top:0,right:'-4px',width:'4px',height:'6px',borderRight:'2px solid var(--pink)',borderTop:'2px solid var(--pink)'}}/>
+                   </div>
+                   <div style={{position:'absolute',left:`${sourcePlayheadPct}%`,top:0,bottom:0,width:'1px',background:'var(--yellow)',zIndex:3,pointerEvents:'none'}}>
+                      <div style={{position:'absolute',top:0,left:'50%',transform:'translateX(-50%)',width:0,height:0,borderLeft:'4px solid transparent',borderRight:'4px solid transparent',borderTop:'5px solid var(--yellow)'}}/>
+                   </div>
+                 </div>
+              )}
+              
               {/* Source monitor controls */}
               <div style={{padding:'4px 8px',display:'flex',gap:'4px',alignItems:'center',borderTop:'1px solid var(--border)',background:'var(--bg-tertiary)',flexShrink:0}}>
-                <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--text-secondary)',marginRight:'4px'}}>00;00;00;00</span>
+                <span style={{fontSize:'9px',fontFamily:'monospace',color:'var(--text-secondary)',marginRight:'4px',minWidth:'55px'}}>
+                  {sourceClip ? `Dur: ${Math.floor(sourceClip.duration * Math.abs(sourceOutPct - sourceInPct)/100 / 15).toFixed(1)}s` : '00;00;00;00'}
+                </span>
                 <div style={{flex:1,display:'flex',justifyContent:'center',gap:'3px',alignItems:'center'}}>
-                  {/* In/Out point buttons */}
-                  <button title="Mark In (I)" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'{I}'}</button>
-                  {['⏮','⏪','▶','⏩','⏭'].map(ic=><button key={ic} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>{ic}</button>)}
-                  <button title="Mark Out (O)" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'O}'}</button>
+                  <button title="Mark In (I)" onClick={()=>setSourceInPct(sourcePlayheadPct)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'{I}'}</button>
+                  {['⏮','⏪','▶','⏩','⏭'].map(ic=><button key={ic} style={{background:ic==='▶'?'var(--accent)':'none',border:'none',color:ic==='▶'?'white':'var(--text-secondary)',width:ic==='▶'?'20px':'auto',height:ic==='▶'?'20px':'auto',borderRadius:'50%',cursor:'pointer',fontSize:ic==='▶'?'8px':'11px',display:'flex',alignItems:'center',justifyContent:'center'}}>{ic}</button>)}
+                  <button title="Mark Out (O)" onClick={()=>setSourceOutPct(sourcePlayheadPct)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'O}'}</button>
                 </div>
                 {/* Drag video/audio only icons */}
                 <div style={{display:'flex',gap:'3px'}}>
-                  <button title="Drag Video Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:'pointer',fontSize:'9px',padding:'2px 4px',borderRadius:'3px'}}>V</button>
-                  <button title="Drag Audio Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:'pointer',fontSize:'9px',padding:'2px 4px',borderRadius:'3px'}}>A</button>
+                  <button draggable onDragStart={e=>handleDragStartNewItem(e,{type:'video',label:sourceClip?.label||'',color:sourceClip?.color||'',duration:sourceClip?Math.abs(sourceOutPct-sourceInPct)/100*sourceClip.duration:100})} title="Drag Video Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:sourceClip?'grab':'default',fontSize:'9px',padding:'2px 4px',borderRadius:'3px',opacity:sourceClip?1:0.3}}>V</button>
+                  <button draggable onDragStart={e=>handleDragStartNewItem(e,{type:'audio',label:sourceClip?.label||'',color:sourceClip?.color||'',duration:sourceClip?Math.abs(sourceOutPct-sourceInPct)/100*sourceClip.duration:100})} title="Drag Audio Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:sourceClip?'grab':'default',fontSize:'9px',padding:'2px 4px',borderRadius:'3px',opacity:sourceClip?1:0.3}}>A</button>
                 </div>
               </div>
             </div>
