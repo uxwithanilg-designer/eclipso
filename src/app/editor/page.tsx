@@ -999,9 +999,11 @@ export default function EditorPage() {
   const [isMobile,setIsMobile]         = useState(false);
   const [leftWidth]                    = useState(260);
   const [razorLinePos, setRazorLinePos] = useState<number|null>(null);
+  const [dragState, setDragState]       = useState<{clipId:number;startX:number;startStart:number}|null>(null);
   const tlRef           = useRef<HTMLDivElement>(null);
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
   const historyRef      = useRef<Clip[][]>([]);
+  const dragMovedRef    = useRef(false);
 
   useEffect(()=>{
     const check=()=>setIsMobile(window.innerWidth<768);
@@ -1069,8 +1071,28 @@ export default function EditorPage() {
     notify('✂ Clip split · Ctrl+Z to undo');
   };
 
-  // ── RAZOR: track cursor for red line indicator ──
+  // ── DRAG: global mouse-up ends clip drag ──
+  useEffect(()=>{
+    const onUp=()=>setDragState(null);
+    window.addEventListener('mouseup',onUp);
+    return ()=>window.removeEventListener('mouseup',onUp);
+  },[]);
+
+  // ── RAZOR line + MOVE tool drag ──
   const handleTracksMouseMove=(e:React.MouseEvent<HTMLDivElement>)=>{
+    // –– MOVE: drag clip left/right ––
+    if(dragState&&tlRef.current){
+      const dx=e.clientX-dragState.startX;
+      if(Math.abs(dx)>2){
+        dragMovedRef.current=true;
+        const r=tlRef.current.getBoundingClientRect();
+        const deltaUnits=Math.round((dx/r.width)*100/(zoom*0.14));
+        const newStart=Math.max(0,dragState.startStart+deltaUnits);
+        setClips(prev=>prev.map(c=>c.id===dragState.clipId?{...c,start:newStart}:c));
+      }
+      return;
+    }
+    // –– RAZOR: red cursor line ––
     if(activeTool!=='razor'||!tlRef.current){ if(razorLinePos!==null) setRazorLinePos(null); return; }
     const r=tlRef.current.getBoundingClientRect();
     setRazorLinePos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
@@ -1372,7 +1394,19 @@ export default function EditorPage() {
                       {/* Clips on this track */}
                       {clips.filter(c=>c.trackId===track.id).map(clip=>(
                         <div key={clip.id}
+                          onMouseDown={e=>{
+                            if(activeTool==='select'&&e.button===0){
+                              e.stopPropagation();
+                              dragMovedRef.current=false;
+                              // save state for undo before drag
+                              historyRef.current=[...historyRef.current.slice(-30),[...clips]];
+                              setDragState({clipId:clip.id,startX:e.clientX,startStart:clip.start});
+                              setSelectedClip(clip.id);
+                            }
+                          }}
                           onClick={e=>{
+                            // suppress click if this was a real drag
+                            if(dragMovedRef.current){ dragMovedRef.current=false; return; }
                             if(activeTool==='razor'){ handleRazorSplit(e,clip); }
                             else{ e.stopPropagation(); setSelectedClip(clip.id===selectedClip?null:clip.id); }
                           }}
@@ -1386,7 +1420,7 @@ export default function EditorPage() {
                           border:`1px solid ${clip.color}${selectedClip===clip.id?'ee':'50'}`,
                           borderRadius: track.type==='caption'?'3px':'5px',
                           overflow:'hidden',
-                          cursor:activeTool==='select'?'move':activeTool==='razor'?'crosshair':'pointer',
+                          cursor:dragState?.clipId===clip.id?'grabbing':activeTool==='select'?'grab':activeTool==='razor'?'crosshair':'pointer',
                           boxShadow:selectedClip===clip.id?`0 0 0 1.5px ${clip.color}, inset 0 0 0 1px ${clip.color}40`:'none',
                           transition:'border-color 0.1s',
                           display:'flex', flexDirection:'column',
