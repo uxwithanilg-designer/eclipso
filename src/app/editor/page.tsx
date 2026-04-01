@@ -1005,10 +1005,14 @@ export default function EditorPage() {
   const [dragOverTrackId, setDragOverTrackId] = useState<number|null>(null);
   const [edgeDragState, setEdgeDragState] = useState<{clipId:number, edge:'left'|'right', startX:number, initialStart:number, initialWidth:number, sourceWidth:number}|null>(null);
   const [trimTooltip, setTrimTooltip]     = useState<{x:number, y:number, text:string}|null>(null);
+  const [gapContextMenu, setGapContextMenu] = useState<{x:number, y:number, gap:{trackId:number, start:number, width:number}}|null>(null);
   const tlRef           = useRef<HTMLDivElement>(null);
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
   const historyRef      = useRef<Clip[][]>([]);
   const dragMovedRef    = useRef(false);
+
+  const stateRef = useRef<{clips:Clip[], selectedClip:number|null}>({ clips, selectedClip });
+  useEffect(() => { stateRef.current = { clips, selectedClip }; }, [clips, selectedClip]);
 
   useEffect(()=>{
     const check=()=>setIsMobile(window.innerWidth<768);
@@ -1026,6 +1030,27 @@ export default function EditorPage() {
       if(!e.ctrlKey&&!e.metaKey){
         if(e.key==='v'||e.key==='V'){ setActiveTool('select'); setRazorLinePos(null); }
         if(e.key==='c'||e.key==='C'){ setActiveTool('razor'); }
+        if(e.key==='b'||e.key==='B'){ setActiveTool('ripple'); setRazorLinePos(null); }
+        if(e.key==='Delete'||e.key==='Backspace') {
+           const { clips: curClips, selectedClip: curSel } = stateRef.current;
+           if (curSel) {
+              e.preventDefault();
+              historyRef.current=[...historyRef.current.slice(-30),[...curClips]];
+              const targetClip = curClips.find(c => c.id === curSel);
+              if (targetClip) {
+                 const gapWidth = targetClip.width;
+                 setClips(curClips.filter(c => c.id !== curSel).map(c => {
+                    if (c.trackId === targetClip.trackId && c.start >= targetClip.start) {
+                       return { ...c, start: Math.max(0, c.start - gapWidth) };
+                    }
+                    return c;
+                 }));
+                 setSelectedClip(null);
+                 setNotification('Delete & Ripple Close');
+                 setTimeout(()=>setNotification(null),2000);
+              }
+           }
+        }
       }
       if((e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')){
         e.preventDefault();
@@ -1590,6 +1615,48 @@ export default function EditorPage() {
                         <div key={i} style={{position:'absolute',left:`${i*4*zoom}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.04)'}}/>
                       ))}
 
+                      {/* GAPs rendering for Ripple Delete */}
+                      {(() => {
+                         const trackClips = clips.filter(c => c.trackId === track.id).sort((a,b) => a.start - b.start);
+                         const gaps = [];
+                         let currentX = 0;
+                         for (let i = 0; i < trackClips.length; i++) {
+                           const c = trackClips[i];
+                           if (c.start > currentX) {
+                             gaps.push({ start: currentX, width: c.start - currentX, trackId: track.id });
+                           }
+                           currentX = c.start + c.width;
+                         }
+                         return gaps.map((gap, i) => (
+                           <div key={`gap-${i}`}
+                             onContextMenu={e => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setGapContextMenu({ x: e.clientX, y: e.clientY, gap });
+                             }}
+                             onClick={e => { e.stopPropagation(); setSelectedClip(null); }}
+                             style={{
+                                position:'absolute',
+                                left:`${gap.start*zoom*0.14}%`,
+                                width:`${gap.width*zoom*0.14}%`,
+                                top: track.type==='caption'?'2px':'4px',
+                                bottom: track.type==='caption'?'2px':'4px',
+                                background:'rgba(255,255,255,0.03)',
+                                border:'1px dashed rgba(255,255,255,0.06)',
+                                borderRadius: track.type==='caption'?'3px':'5px',
+                                overflow:'hidden',
+                                display:'flex', alignItems:'center', justifyContent:'center',
+                                cursor:'context-menu', zIndex:5,
+                                transition:'background 0.2s',
+                             }}
+                             onMouseOver={e=>e.currentTarget.style.background='rgba(255,255,255,0.07)'}
+                             onMouseOut={e=>e.currentTarget.style.background='rgba(255,255,255,0.03)'}
+                           >
+                             {gap.width > 25 && <span style={{fontSize:'8.5px',fontFamily:'monospace',color:'rgba(255,255,255,0.25)',fontWeight:700,pointerEvents:'none'}}>{(gap.width/15).toFixed(1)}s Gap</span>}
+                           </div>
+                         ));
+                      })()}
+
                       {/* Caption track label */}
                       {track.type==='caption' && (
                         <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',padding:'0 8px',gap:'8px',pointerEvents:'none'}}>
@@ -1725,6 +1792,38 @@ export default function EditorPage() {
               }}>
                 {trimTooltip.text}
               </div>
+            )}
+
+            {/* GAP CONTEXT MENU */}
+            {gapContextMenu && (
+              <>
+              <div style={{position:'fixed',inset:0,zIndex:9998}} onClick={(e)=>{e.stopPropagation();setGapContextMenu(null);}} onContextMenu={e=>{e.preventDefault();e.stopPropagation();setGapContextMenu(null);}} />
+              <div style={{
+                 position:'fixed', left:gapContextMenu.x, top:gapContextMenu.y, zIndex:9999,
+                 background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'6px',
+                 padding:'4px', boxShadow:'0 4px 12px rgba(0,0,0,0.5)', display:'flex', flexDirection:'column', width:'150px'
+              }}>
+                 <button onClick={(e) => {
+                    e.stopPropagation();
+                    const { gap } = gapContextMenu;
+                    historyRef.current=[...historyRef.current.slice(-30),[...stateRef.current.clips]];
+                    setClips(prev => prev.map(c => {
+                       if (c.trackId === gap.trackId && c.start >= gap.start + gap.width) {
+                          return { ...c, start: Math.max(0, c.start - gap.width) };
+                       }
+                       return c;
+                    }));
+                    setGapContextMenu(null);
+                    notify('Ripple Delete applied to Gap');
+                 }} style={{
+                    background:'transparent', border:'none', color:'var(--text-primary)', padding:'6px 8px',
+                    textAlign:'left', fontSize:'11px', fontFamily:'Syne,sans-serif', cursor:'pointer', borderRadius:'4px',
+                    display:'flex', alignItems:'center', gap:'8px'
+                 }} onMouseOver={e=>e.currentTarget.style.background='var(--accent)'} onMouseOut={e=>e.currentTarget.style.background='transparent'}>
+                    <span style={{color:'var(--accent)'}}>🗑</span> Ripple Delete
+                 </button>
+              </div>
+              </>
             )}
 
             {/* Timeline footer / transport */}
