@@ -1184,19 +1184,30 @@ export default function EditorPage() {
        let newStart = edgeDragState.initialStart;
        let newWidth = edgeDragState.initialWidth;
        const minWidth = 15; 
+       let shiftAmount = 0;
 
        if (edgeDragState.edge === 'left') {
-          newStart = Math.min(newStart + edgeDragState.initialWidth - minWidth, Math.max(0, edgeDragState.initialStart + deltaUnits));
-          newWidth = (edgeDragState.initialStart + edgeDragState.initialWidth) - newStart;
+          const clampedDelta = Math.min(edgeDragState.initialWidth - minWidth, Math.max(-edgeDragState.initialStart, deltaUnits));
+          newWidth = edgeDragState.initialWidth - clampedDelta;
+
+          if (activeTool === 'ripple') {
+             // Ripple Left Edit: clip itself doesn't move its visual start to prevent a gap.
+             // Instead, it shrinks, and the right edge pulls everything downstream leftwards.
+             newStart = edgeDragState.initialStart;
+             shiftAmount = -clampedDelta; 
+          } else {
+             // Normal trim: left edge moves freely.
+             newStart = edgeDragState.initialStart + clampedDelta;
+          }
        } else {
           newWidth = Math.max(minWidth, edgeDragState.initialWidth + deltaUnits);
           if (edgeDragState.sourceWidth && newWidth > edgeDragState.sourceWidth) {
              newWidth = edgeDragState.sourceWidth;
           }
+          if (activeTool === 'ripple') {
+             shiftAmount = newWidth - edgeDragState.initialWidth;
+          }
        }
-
-       // Ripple logic
-       const widthDiff = newWidth - edgeDragState.initialWidth; 
 
        setClips(prev => {
          const updatedClips = [...prev];
@@ -1206,21 +1217,28 @@ export default function EditorPage() {
          const oldClip = updatedClips[clipIdx];
          updatedClips[clipIdx] = {...oldClip, start: newStart, width: newWidth};
 
-         if (activeTool === 'ripple') {
+         if (activeTool === 'ripple' && shiftAmount !== 0) {
            // Standard Ripple: downstream clips on the SAME track shift.
            updatedClips.forEach((c, idx) => {
              if (idx !== clipIdx && c.trackId === oldClip.trackId && c.start >= edgeDragState.initialStart + edgeDragState.initialWidth - 1) {
-                updatedClips[idx] = {...c, start: Math.max(0, c.start + widthDiff)};
+                updatedClips[idx] = {...c, start: Math.max(0, c.start + shiftAmount)};
              }
            });
          }
          return updatedClips;
        });
 
+       const durationS = newWidth/15;
+       let tooltipText = `Dur: ${durationS.toFixed(1)}s`;
+       if (activeTool === 'ripple' && shiftAmount !== 0) {
+          const shiftS = shiftAmount/15;
+          tooltipText += ` (${shiftS > 0 ? '+' : ''}${shiftS.toFixed(1)}s ripple)`;
+       }
+
        setTrimTooltip({
          x: e.clientX,
          y: e.clientY - 40,
-         text: `Dur: ${(newWidth/15).toFixed(1)}s`
+         text: tooltipText
        });
        return;
     }
@@ -1656,14 +1674,14 @@ export default function EditorPage() {
                                 historyRef.current=[...historyRef.current.slice(-30),[...clips]];
                                 setEdgeDragState({clipId:clip.id, edge:'left', startX:e.clientX, initialStart:clip.start, initialWidth:clip.width, sourceWidth:clip.sourceWidth||clip.width});
                                 setSelectedClip(clip.id);
-                              }} style={{position:'absolute',left:0,top:0,bottom:0,width:'8px',cursor:'col-resize',zIndex:10}}/>
+                              }} style={{position:'absolute',left:0,top:0,bottom:0,width:'8px',cursor:activeTool==='ripple'?'url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22><text y=%2220%22 font-size=%2220%22 fill=%22%23FFD60A%22>⟪</text></svg>") 12 12, ew-resize':'col-resize',zIndex:10}}/>
                               <div onMouseDown={e=>{
                                 e.stopPropagation();
                                 dragMovedRef.current=false;
                                 historyRef.current=[...historyRef.current.slice(-30),[...clips]];
                                 setEdgeDragState({clipId:clip.id, edge:'right', startX:e.clientX, initialStart:clip.start, initialWidth:clip.width, sourceWidth:clip.sourceWidth||clip.width});
                                 setSelectedClip(clip.id);
-                              }} style={{position:'absolute',right:0,top:0,bottom:0,width:'8px',cursor:'col-resize',zIndex:10}}/>
+                              }} style={{position:'absolute',right:0,top:0,bottom:0,width:'8px',cursor:activeTool==='ripple'?'url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22><text y=%2220%22 font-size=%2220%22 fill=%22%23FFD60A%22>⟫</text></svg>") 12 12, ew-resize':'col-resize',zIndex:10}}/>
                             </>
                           )}
                           <div style={{position:'absolute',left:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to right,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
