@@ -1,18 +1,21 @@
 'use client';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useReducer, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 
 // ═══════════════════════════════════════════════════
 //  TYPES
 // ═══════════════════════════════════════════════════
 type ToolId = 'select'|'track_fwd'|'ripple'|'rolling'|'rate'|'razor'|'slip'|'slide'|'hand'|'zoom'|'pen'|'text';
-type LeftTab = 'media'|'library'|'effects'|'transitions'|'color'|'sound'|'mixer'|'captions'|'ai'|'markers';
+type LeftTab = 'media'|'library'|'effects'|'transitions'|'color'|'sound'|'mixer'|'captions'|'ai'|'markers'|'history';
 type RightTab = 'effectcontrols'|'info';
 type Workspace = 'editing'|'color'|'audio'|'effects'|'all';
 type MobileTab = 'videos'|'music'|'titles'|null;
 type Track = { id:number; type:'video'|'audio'|'caption'; label:string; color:string; muted:boolean; solo:boolean; locked:boolean; height:number };
 type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number; url?:string; sourceOffset?:number };
 type Marker = { id:number; time:number; label:string; color:string };
+type HistoryEntry = { id:number; label:string; clips:Clip[]; timestamp:number };
+type HistoryState = { past:HistoryEntry[]; present:HistoryEntry; future:HistoryEntry[] };
+const MAX_HISTORY = 50;
 
 export interface ProjectFile {
   id: string;
@@ -54,6 +57,7 @@ const LEFT_TABS: {id:LeftTab; icon:string; label:string; badge?:string}[] = [
   {id:'captions',    icon:'💬', label:'Captions'},
   {id:'ai',          icon:'🤖', label:'AI Tools'},
   {id:'markers',     icon:'📍', label:'Markers'},
+  {id:'history',     icon:'🕘', label:'History'},
 ];
 
 const VIDEO_EFFECTS = [
@@ -836,6 +840,68 @@ function ExportModal({onClose}:{onClose:()=>void}) {
 }
 
 // ═══════════════════════════════════════════════════
+//  HISTORY PANEL
+// ═══════════════════════════════════════════════════
+function HistoryPanel({history,onJumpTo}:{history:{past:HistoryEntry[];present:HistoryEntry;future:HistoryEntry[]};onJumpTo:(idx:number)=>void}) {
+  const all = [...history.past, history.present, ...history.future];
+  const currentIdx = history.past.length;
+  const fmt = (ts:number) => {
+    const s = Math.floor((Date.now()-ts)/1000);
+    if(s<60) return `${s}s ago`;
+    if(s<3600) return `${Math.floor(s/60)}m ago`;
+    return `${Math.floor(s/3600)}h ago`;
+  };
+  const actionIcon: Record<string,string> = {
+    'Add':'➕','Cut':'✂','Delete':'🗑','Move':'↔','Trim':'◀','Source':'📥','Ripple':'⟪','Drag':'🖱',
+  };
+  const getIcon = (label:string) => {
+    const key = Object.keys(actionIcon).find(k => label.startsWith(k));
+    return key ? actionIcon[key] : '⚙';
+  };
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
+        <span style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700}}>HISTORY</span>
+        <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'monospace'}}>{all.length}/{MAX_HISTORY}</span>
+      </div>
+      {all.length<=1&&<div style={{fontSize:'10px',color:'var(--text-muted)',textAlign:'center',padding:'12px 0',opacity:0.5}}>No actions yet.<br/>Edit the timeline to record history.</div>}
+      <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+        {[...all].reverse().map((entry,revIdx)=>{
+          const idx = all.length-1-revIdx;
+          const isCurrent = idx===currentIdx;
+          const isPast = idx<currentIdx;
+          const isFuture = idx>currentIdx;
+          return (
+            <div key={entry.id} onClick={()=>onJumpTo(idx)}
+              style={{display:'flex',alignItems:'center',gap:'8px',padding:'6px 8px',borderRadius:'6px',
+                background:isCurrent?'var(--accent-dim)':isFuture?'transparent':'transparent',
+                border:`1px solid ${isCurrent?'rgba(124,92,255,0.45)':'transparent'}`,
+                cursor:'pointer',opacity:isFuture?0.35:1,transition:'all 0.15s'}}
+              onMouseEnter={e=>e.currentTarget.style.background=isCurrent?'var(--accent-dim)':'var(--bg-hover)'}
+              onMouseLeave={e=>e.currentTarget.style.background=isCurrent?'var(--accent-dim)':'transparent'}
+            >
+              <span style={{fontSize:'12px',flexShrink:0,opacity:isFuture?0.5:1}}>{getIcon(entry.label)}</span>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:'10px',fontWeight:isCurrent?700:400,fontFamily:'Syne,sans-serif',
+                  color:isCurrent?'var(--accent)':isPast?'var(--text-primary)':'var(--text-muted)',
+                  overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{entry.label}</div>
+                <div style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'monospace'}}>{idx===0?'Initial State':fmt(entry.timestamp)}</div>
+              </div>
+              {isCurrent&&<div style={{width:'6px',height:'6px',borderRadius:'50%',background:'var(--accent)',flexShrink:0,boxShadow:'0 0 6px var(--accent-glow)'}}/>}
+            </div>
+          );
+        })}
+      </div>
+      {history.future.length>0&&(
+        <div style={{marginTop:'8px',padding:'6px 8px',borderRadius:'6px',background:'rgba(255,214,10,0.06)',border:'1px solid rgba(255,214,10,0.2)',fontSize:'9px',color:'var(--yellow)',fontFamily:'Syne,sans-serif',textAlign:'center'}}>
+          ↪ {history.future.length} redo action{history.future.length>1?'s':''} available (Ctrl+Shift+Z)
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
 //  MOBILE LAYOUT (kept from previous)
 // ═══════════════════════════════════════════════════
 function MobileEditor({clips,isPlaying,setIsPlaying,playheadPct,setPlayheadPct,timecode,selectedClip,setSelectedClip,onImportMedia,onImportTrack,showExport,setShowExport,notification}:{clips:Clip[];isPlaying:boolean;setIsPlaying:(v:boolean)=>void;playheadPct:number;setPlayheadPct:(v:number)=>void;timecode:string;selectedClip:number|null;setSelectedClip:(v:number|null)=>void;onImportMedia:(l:string)=>void;onImportTrack:(t:typeof MUSIC_TRACKS_DATA[0])=>void;showExport:boolean;setShowExport:(v:boolean)=>void;notification:string|null}) {
@@ -991,7 +1057,66 @@ export default function EditorPage() {
   const [rightTab,setRightTab]         = useState<RightTab>('effectcontrols');
   const [workspace,setWorkspace]       = useState<Workspace>('editing');
   const [tracks,setTracks]             = useState<Track[]>(initTracks);
-  const [clips,setClips]               = useState<Clip[]>(initClips);
+
+  const [history, dispatch] = useReducer(
+    (state: HistoryState, action: {type:'PUSH'; label:string; clips:Clip[]} | {type:'UNDO'} | {type:'REDO'} | {type:'SET'; clips:Clip[]} | {type:'JUMP_TO'; index:number}) => {
+      switch (action.type) {
+        case 'PUSH':
+          const newPast = [...state.past, state.present].slice(-MAX_HISTORY);
+          return {
+            past: newPast,
+            present: { id: Date.now(), label: action.label, clips: action.clips, timestamp: Date.now() },
+            future: []
+          };
+        case 'UNDO':
+          if (state.past.length === 0) return state;
+          const prev = state.past[state.past.length - 1];
+          return {
+            past: state.past.slice(0, -1),
+            present: prev,
+            future: [state.present, ...state.future]
+          };
+        case 'REDO':
+          if (state.future.length === 0) return state;
+          const next = state.future[0];
+          return {
+            past: [...state.past, state.present],
+            present: next,
+            future: state.future.slice(1)
+          };
+        case 'SET': // silent set without history
+          return { ...state, present: { ...state.present, clips: action.clips } };
+        case 'JUMP_TO':
+          const all = [...state.past, state.present, ...state.future];
+          if (action.index < 0 || action.index >= all.length) return state;
+          return {
+            past: all.slice(0, action.index),
+            present: all[action.index],
+            future: all.slice(action.index + 1)
+          };
+        default: return state;
+      }
+    },
+    { past: [], present: { id: Date.now(), label: 'Initial State', clips: initClips(), timestamp: Date.now() }, future: [] }
+  );
+
+  const clips = history.present?.clips ?? [];
+  const setClips = useCallback((newClipsOrUpdater: Clip[] | ((prev: Clip[]) => Clip[])) => {
+    // For non-history-generating rapid updates (like dragging real-time visual feedback)
+    dispatch({ type: 'SET', clips: typeof newClipsOrUpdater === 'function' ? (newClipsOrUpdater as (prev: Clip[]) => Clip[])(clips) : newClipsOrUpdater });
+  }, [clips]);
+
+  const applyAction = useCallback((label: string, newClips: Clip[]) => {
+    dispatch({ type: 'PUSH', label, clips: newClips });
+  }, []);
+
+  const undo = useCallback(() => dispatch({ type: 'UNDO' }), []);
+  const redo = useCallback(() => dispatch({ type: 'REDO' }), []);
+  
+  const jumpToHistory = useCallback((idx: number) => {
+    dispatch({ type: 'JUMP_TO', index: idx });
+  }, []);
+
   const [markers,setMarkers]           = useState<Marker[]>(initMarkers);
   const [isPlaying,setIsPlaying]       = useState(false);
   const [playheadPos,setPlayheadPos]   = useState(38);
@@ -1028,13 +1153,15 @@ export default function EditorPage() {
   const [gapContextMenu, setGapContextMenu] = useState<{x:number, y:number, gap:{trackId:number, start:number, width:number}}|null>(null);
   const tlRef           = useRef<HTMLDivElement>(null);
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
-  const historyRef      = useRef<Clip[][]>([]);
   const dragMovedRef    = useRef(false);
   // Ref to store drag item data — bypasses React stale closure in drag event handlers
   const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
 
   const stateRef = useRef<{clips:Clip[], selectedClip:number|null}>({ clips, selectedClip });
   useEffect(() => { stateRef.current = { clips, selectedClip }; }, [clips, selectedClip]);
+
+  // Ref for clip history (for undo during drag operations)
+  const historyRef = useRef<Clip[][]>([]);
   
   const sourceStateRef = useRef({ playhead: 0 });
   useEffect(() => { sourceStateRef.current.playhead = sourcePlayheadPct; }, [sourcePlayheadPct]);
@@ -1067,16 +1194,16 @@ export default function EditorPage() {
            const { clips: curClips, selectedClip: curSel } = stateRef.current;
            if (curSel) {
               e.preventDefault();
-              historyRef.current=[...historyRef.current.slice(-30),[...curClips]];
               const targetClip = curClips.find(c => c.id === curSel);
               if (targetClip) {
                  const gapWidth = targetClip.width;
-                 setClips(curClips.filter(c => c.id !== curSel).map(c => {
+                 const newClips = curClips.filter(c => c.id !== curSel).map(c => {
                     if (c.trackId === targetClip.trackId && c.start >= targetClip.start) {
                        return { ...c, start: Math.max(0, c.start - gapWidth) };
                     }
                     return c;
-                 }));
+                 });
+                 applyAction(`Delete "${targetClip.label}"`, newClips);
                  setSelectedClip(null);
                  setNotification('Delete & Ripple Close');
                  setTimeout(()=>setNotification(null),2000);
@@ -1084,9 +1211,13 @@ export default function EditorPage() {
            }
         }
       }
-      if((e.ctrlKey||e.metaKey)&&(e.key==='i'||e.key==='I')){
-        e.preventDefault();
-        fileInputRef.current?.click();
+      if((e.ctrlKey||e.metaKey)){
+         if(e.key==='z'||e.key==='Z'){
+            if (e.shiftKey) { e.preventDefault(); redo(); }
+            else { e.preventDefault(); undo(); }
+         }
+         else if(e.key==='y'||e.key==='Y'){ e.preventDefault(); redo(); }
+         else if(e.key==='i'||e.key==='I'){ e.preventDefault(); fileInputRef.current?.click(); }
       }
     };
     window.addEventListener('keydown',onKey);
@@ -1212,7 +1343,6 @@ export default function EditorPage() {
   };
   const handleSourceInsert = (mode: 'insert' | 'overwrite') => {
       if (!sourceClip) return;
-      historyRef.current = [...historyRef.current.slice(-30), [...clips]];
       
       const inP = Math.min(sourceInPct, sourceOutPct);
       const outP = Math.max(sourceInPct, sourceOutPct);
@@ -1263,7 +1393,8 @@ export default function EditorPage() {
          sourceOffset: Math.min(sourceInPct, sourceOutPct) / 100 * sourceClip.duration
       };
       
-      setClips([...newClips, newClip]);
+      const nextClips = [...newClips, newClip];
+      applyAction(`Source ${mode} "${sourceClip.label}"`, nextClips);
       notify(`Source ${mode} completed`);
   };
 
@@ -1279,15 +1410,13 @@ export default function EditorPage() {
     if(!tlRef.current) return;
     const r=tlRef.current.getBoundingClientRect();
     const pct=((e.clientX-r.left)/r.width)*100;
-    // Convert screen % → timeline unit (reverse of clip.start*zoom*0.14)
     const splitUnit=Math.round(pct/(zoom*0.14));
     if(splitUnit<=clip.start||splitUnit>=(clip.start+clip.width)) return;
-    // Push to undo history
-    historyRef.current=[...historyRef.current.slice(-30),[...clips]];
     const id1=Date.now(), id2=id1+1;
     const left:Clip ={...clip,id:id1,width:splitUnit-clip.start};
     const right:Clip={...clip,id:id2,start:splitUnit,width:(clip.start+clip.width)-splitUnit};
-    setClips(prev=>prev.filter(c=>c.id!==clip.id).concat([left,right]));
+    const nextClips = clips.filter(c=>c.id!==clip.id).concat([left,right]);
+    applyAction(`Cut clip "${clip.label}"`, nextClips);
     setActiveTool('select');
     setSelectedClip(id1);
     notify('✂ Clip split · Ctrl+Z to undo');
@@ -1392,9 +1521,6 @@ export default function EditorPage() {
        finalTrackId = fallback.id;
     }
     
-    // push to undo stack
-    historyRef.current=[...historyRef.current.slice(-30),[...clips]];
-    
     const w = state.duration || 100; // default duration
     
     // Check overlap
@@ -1425,7 +1551,8 @@ export default function EditorPage() {
        sourceOffset: state.sourceOffset || 0
     };
 
-    setClips([...newClips, newClip]);
+    const nextClips = [...newClips, newClip];
+    applyAction(`Add clip "${newClip.label}"`, nextClips);
     setDragNewState(null);
     setDragNewPos(null);
     setSelectedClip(newClip.id);
@@ -1589,7 +1716,7 @@ export default function EditorPage() {
     setRazorLinePos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
   };
 
-  const selectedClipObj = clips.find(c=>c.id===selectedClip);
+  const selectedClipObj = clips?.find(c=>c.id===selectedClip);
 
   if(isMobile) return (
     <MobileEditor clips={clips} isPlaying={isPlaying} setIsPlaying={setIsPlaying}
@@ -1690,6 +1817,7 @@ export default function EditorPage() {
             {leftTab==='captions'    && <PanelCaptions/>}
             {leftTab==='ai'          && <PanelAI/>}
             {leftTab==='markers'     && <PanelMarkers markers={markers} onJump={t=>setPlayheadPos(t/120*100)}/>}
+            {leftTab==='history'     && <HistoryPanel history={history} onJumpTo={jumpToHistory} />}
           </div>
         </div>
 
