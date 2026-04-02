@@ -11,7 +11,7 @@ type RightTab = 'effectcontrols'|'info';
 type Workspace = 'editing'|'color'|'audio'|'effects'|'all';
 type MobileTab = 'videos'|'music'|'titles'|null;
 type Track = { id:number; type:'video'|'audio'|'caption'; label:string; color:string; muted:boolean; solo:boolean; locked:boolean; height:number };
-type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number };
+type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number; url?:string; sourceOffset?:number };
 type Marker = { id:number; time:number; label:string; color:string };
 
 export interface ProjectFile {
@@ -210,7 +210,7 @@ function PanelMedia({files, onUploadClick, onImport, onDragStartItem, onDoubleCl
       <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
         {files.length === 0 && <div style={{fontSize:'10px',color:'var(--text-muted)',textAlign:'center',padding:'10px'}}>No files imported</div>}
         {files.map((f,i)=>(
-          <div key={f.id} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.type, label:f.name, color:f.color, duration: f.duration})} onDoubleClick={()=>onDoubleClickItem ? onDoubleClickItem({type:f.type, label:f.name, color:f.color, duration: f.duration}) : onImport(f)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s',position:'relative'}}
+          <div key={f.id} draggable onDragStart={e=>onDragStartItem&&onDragStartItem(e, {type:f.type, label:f.name, color:f.color, duration: f.duration, url: f.url})} onDoubleClick={()=>onDoubleClickItem ? onDoubleClickItem({type:f.type, label:f.name, color:f.color, duration: f.duration, url: f.url}) : onImport(f)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 8px',borderRadius:'7px',background:'var(--bg-secondary)',border:'1px solid var(--border)',cursor:'grab',transition:'all 0.15s',position:'relative'}}
             onMouseEnter={e=>e.currentTarget.style.borderColor='var(--border-bright)'}
             onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}
           >
@@ -1013,13 +1013,14 @@ export default function EditorPage() {
   const fileInputRef                          = useRef<HTMLInputElement>(null);
   
   // Source Monitor State
-  const [sourceClip, setSourceClip] = useState<{label:string, color:string, type:'video'|'audio', duration:number}|null>(null);
+  const [sourceClip, setSourceClip] = useState<{label:string, color:string, type:'video'|'audio', duration:number, url?:string}|null>(null);
+  const [sourceIsPlaying, setSourceIsPlaying] = useState(false);
   const [sourcePlayheadPct, setSourcePlayheadPct] = useState(0);
   const [sourceInPct, setSourceInPct]     = useState(0);
   const [sourceOutPct, setSourceOutPct]   = useState(100);
 
   const [dragState, setDragState]       = useState<{clipId:number;startX:number;startStart:number}|null>(null);
-  const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number}|null>(null);
+  const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
   const [dragNewPos, setDragNewPos]     = useState<{trackId:number, start:number}|null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<number|null>(null);
   const [edgeDragState, setEdgeDragState] = useState<{clipId:number, edge:'left'|'right', startX:number, initialStart:number, initialWidth:number, sourceWidth:number}|null>(null);
@@ -1029,6 +1030,8 @@ export default function EditorPage() {
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
   const historyRef      = useRef<Clip[][]>([]);
   const dragMovedRef    = useRef(false);
+  // Ref to store drag item data — bypasses React stale closure in drag event handlers
+  const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
 
   const stateRef = useRef<{clips:Clip[], selectedClip:number|null}>({ clips, selectedClip });
   useEffect(() => { stateRef.current = { clips, selectedClip }; }, [clips, selectedClip]);
@@ -1056,6 +1059,10 @@ export default function EditorPage() {
         if(e.key==='s'||e.key==='S'){ setSnappingEnabled(p=>!p); notify(snappingEnabled?'🧲 Snapping Off':'🧲 Snapping On'); }
         if(e.key==='i'||e.key==='I'){ setSourceInPct(sourceStateRef.current.playhead); }
         if(e.key==='o'||e.key==='O'){ setSourceOutPct(sourceStateRef.current.playhead); }
+        if(e.code==='Space') {
+           e.preventDefault();
+           setIsPlaying(p=>!p);
+        }
         if(e.key==='Delete'||e.key==='Backspace') {
            const { clips: curClips, selectedClip: curSel } = stateRef.current;
            if (curSel) {
@@ -1085,6 +1092,30 @@ export default function EditorPage() {
     window.addEventListener('keydown',onKey);
     return ()=>window.removeEventListener('keydown',onKey);
   },[]);
+
+  // Timeline Playback loop
+  useEffect(() => {
+    let req: number;
+    let lastTime = performance.now();
+    const loop = (time: number) => {
+      const dt = time - lastTime;
+      lastTime = time;
+      if (dt > 0) {
+         setPlayheadPos(p => {
+             const playheadUnits = p / (zoom * 0.14);
+             const newUnits = playheadUnits + ((dt / 1000) * 15);
+             let pct = newUnits * (zoom * 0.14);
+             if (pct > 100) pct = 0; // loop back
+             return pct;
+         });
+      }
+      req = requestAnimationFrame(loop);
+    };
+    if (isPlaying) {
+      req = requestAnimationFrame(loop);
+    }
+    return () => cancelAnimationFrame(req);
+  }, [isPlaying, zoom]);
 
   const handleProcessUploadedFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -1164,7 +1195,8 @@ export default function EditorPage() {
     let type = typeof f === 'string' ? 'video' : f.type;
     let trackId = type === 'audio' ? 4 : 3;
     let width = typeof f === 'string' ? 130 : f.duration || 150;
-    setClips(p=>[...p,{id:Date.now(),trackId,start: playheadPos/(zoom*0.14) || 0,width,label,color,type:type as 'video'|'audio'}]);
+    let url = typeof f === 'string' ? undefined : f.url;
+    setClips(p=>[...p,{id:Date.now(),trackId,start: Math.round(playheadPos/(zoom*0.14)) || 0,width,label,color,type:type as 'video'|'audio',url,sourceOffset:0,sourceWidth:width}]);
     notify(`"${label}" added to timeline`);
   };
   const handleImportTrack=(t:typeof MUSIC_TRACKS_DATA[0])=>{
@@ -1172,10 +1204,11 @@ export default function EditorPage() {
     notify(`"${t.title}" imported to A2`);
   };
   const handleOpenSource=(item:any)=>{
-    setSourceClip({ label: item.label, type: item.type, color: item.color, duration: item.duration || 150 });
+    setSourceClip({ label: item.label, type: item.type, color: item.color, duration: item.duration || 150, url: item.url });
     setSourcePlayheadPct(0);
     setSourceInPct(0);
     setSourceOutPct(100);
+    setSourceIsPlaying(false);
   };
   const handleSourceInsert = (mode: 'insert' | 'overwrite') => {
       if (!sourceClip) return;
@@ -1225,7 +1258,9 @@ export default function EditorPage() {
          label: sourceClip.label,
          color: sourceClip.color,
          type: sourceClip.type,
-         sourceWidth: sourceClip.duration
+         sourceWidth: sourceClip.duration,
+         url: sourceClip.url,
+         sourceOffset: Math.min(sourceInPct, sourceOutPct) / 100 * sourceClip.duration
       };
       
       setClips([...newClips, newClip]);
@@ -1261,6 +1296,7 @@ export default function EditorPage() {
   // ── DRAG: global mouse-up ends clip drag ──
   useEffect(()=>{
     const onUp=()=>{ 
+       dragNewItemRef.current = null;  // always clear on mouseup
        setDragState(null); setDragNewState(null); setDragNewPos(null); setDragOverTrackId(null);
        setEdgeDragState(null); setTrimTooltip(null);
        setSnapLineUnits(null);
@@ -1270,16 +1306,20 @@ export default function EditorPage() {
   },[]);
 
   // ── NEW CLIP DRAG START ──
-  const handleDragStartNewItem = (e:React.DragEvent, item:{type:'video'|'audio', label:string, color:string, duration?:number}) => {
-    e.dataTransfer.setData('text/plain', item.label); // necessary for HTML5 drag
+  const handleDragStartNewItem = (e:React.DragEvent, item:{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}) => {
+    e.dataTransfer.setData('text/plain', item.label);
+    e.dataTransfer.setData('application/json', JSON.stringify(item));
     e.dataTransfer.effectAllowed = 'copy';
+    dragNewItemRef.current = item;  // store in ref for stale-closure-safe access
     setDragNewState(item);
   };
 
   // ── NEW CLIP DRAG OVER (GHOST) ──
   const handleDragOver = (e:React.DragEvent<HTMLDivElement>) => {
     e.preventDefault(); // allow drop
-    if (!dragNewState || !tracksAreaRef.current || !tlRef.current) return;
+    // Read from ref (not state) to avoid stale closure
+    const item = dragNewItemRef.current;
+    if (!item || !tracksAreaRef.current || !tlRef.current) return;
     const r=tlRef.current.getBoundingClientRect();
     const pct=((e.clientX-r.left)/r.width)*100;
     const newStart=Math.max(0, Math.round(pct/(zoom*0.14)));
@@ -1292,15 +1332,10 @@ export default function EditorPage() {
       relY-=t.height;
     }
 
-    if (targetTrack && targetTrack.type !== 'caption' && targetTrack.type === dragNewState.type) {
+    if (targetTrack && targetTrack.type !== 'caption') {
+       // Accept drop on any non-caption track; type mismatch handled in handleDrop
        setDragNewPos({ trackId: targetTrack.id, start: newStart });
        setDragOverTrackId(targetTrack.id);
-    } else if (dragNewState.type === 'audio') {
-       const firstAudio = tracks.find(t=>t.type==='audio');
-       if(firstAudio) {
-          setDragNewPos({ trackId: firstAudio.id, start: newStart });
-          setDragOverTrackId(firstAudio.id);
-       }
     } else {
        setDragNewPos(null);
        setDragOverTrackId(null);
@@ -1311,20 +1346,59 @@ export default function EditorPage() {
   const handleDrop = (e:React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOverTrackId(null);
-    if (!dragNewState || !dragNewPos) {
+
+    // 1. Try ref first (most reliable, avoids stale state)
+    // 2. Fall back to dataTransfer JSON
+    let state = dragNewItemRef.current;
+    if (!state) {
+        try { state = JSON.parse(e.dataTransfer.getData('application/json')); } catch(err){}
+    }
+    dragNewItemRef.current = null;  // clear ref
+
+    if (!state || !tracksAreaRef.current || !tlRef.current) {
        setDragNewState(null);
        setDragNewPos(null);
        return;
     }
     
+    // Re-calculate exactly where we dropped (bypassing any mouseup race condition erasures)
+    const r=tlRef.current.getBoundingClientRect();
+    const pct=((e.clientX-r.left)/r.width)*100;
+    const finalStart=Math.max(0, Math.round(pct/(zoom*0.14)));
+
+    const areaRect=tracksAreaRef.current.getBoundingClientRect();
+    let relY=e.clientY-areaRect.top;
+    let targetTrack:Track|null=null;
+    for(const t of tracks){
+      if(relY<t.height){ targetTrack=t; break; }
+      relY-=t.height;
+    }
+
+    if (!targetTrack || targetTrack.type === 'caption') {
+       setDragNewState(null);
+       setDragNewPos(null);
+       return;
+    }
+
+    let finalTrackId = targetTrack.id;
+    if (targetTrack.type !== state.type) {
+       // Match strict media types to allowed tracks
+       const fallback = tracks.find(t => t.type === state?.type);
+       if (!fallback) {
+          setDragNewState(null);
+          setDragNewPos(null);
+          return;
+       }
+       finalTrackId = fallback.id;
+    }
+    
     // push to undo stack
     historyRef.current=[...historyRef.current.slice(-30),[...clips]];
     
-    const w = dragNewState.duration || 100; // default duration
-    const finalStart = dragNewPos.start;
+    const w = state.duration || 100; // default duration
     
     // Check overlap
-    const overlaps = clips.filter(c => c.trackId === dragNewPos.trackId && 
+    const overlaps = clips.filter(c => c.trackId === finalTrackId && 
                                   ((finalStart >= c.start && finalStart < c.start + c.width) ||
                                    (c.start >= finalStart && c.start < finalStart + w) ||
                                    (finalStart <= c.start && finalStart + w >= c.start + c.width)));
@@ -1333,7 +1407,7 @@ export default function EditorPage() {
        // Ripple push later clips
        const pushAmount = w;
        newClips = newClips.map(c => 
-         (c.trackId === dragNewPos.trackId && c.start + c.width/2 >= finalStart) 
+         (c.trackId === finalTrackId && c.start + c.width/2 >= finalStart) 
             ? { ...c, start: c.start + pushAmount } 
             : c
        );
@@ -1341,12 +1415,14 @@ export default function EditorPage() {
 
     const newClip: Clip = {
        id: Date.now(),
-       trackId: dragNewPos.trackId,
+       trackId: finalTrackId,
        start: finalStart,
        width: w,
-       label: dragNewState.label,
-       color: dragNewState.color,
-       type: dragNewState.type as 'video'|'audio'
+       label: state.label,
+       color: state.color,
+       type: state.type as 'video'|'audio',
+       url: state.url,
+       sourceOffset: state.sourceOffset || 0
     };
 
     setClips([...newClips, newClip]);
@@ -1638,15 +1714,62 @@ export default function EditorPage() {
                 )}
               </div>
               
-              <div style={{flex:1,background:'#050508',display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
-                {sourceClip ? (
-                   <div style={{position:'absolute',inset:'8%',border:'1px solid rgba(255,255,255,0.04)',display:'flex',alignItems:'center',justifyContent:'center',background:`${sourceClip.color}15`,borderRadius:'4px'}}>
+              <div style={{flex:1,background:'#050508',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden',minWidth:0,minHeight:0}}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                   e.preventDefault();
+                   try {
+                     const item = JSON.parse(e.dataTransfer.getData('application/json'));
+                     handleOpenSource(item);
+                   } catch(err){}
+                }}
+              >
+                {sourceClip?.url ? (
+                   <video 
+                      src={sourceClip.url} 
+                      style={{width:'100%',height:'100%',objectFit:'contain',position:'relative',zIndex:2,cursor:'grab'}}
+                      muted
+                      draggable
+                      onDragStart={(e) => {
+                         const offset = Math.min(sourceInPct, sourceOutPct) / 100 * sourceClip.duration;
+                         const length = Math.abs(sourceOutPct - sourceInPct) / 100 * sourceClip.duration;
+                         handleDragStartNewItem(e, {
+                           type: sourceClip.type as 'video'|'audio',
+                           label: sourceClip.label,
+                           color: sourceClip.color,
+                           duration: length,
+                           url: sourceClip.url,
+                           sourceOffset: offset
+                         });
+                      }}
+                      onTimeUpdate={(e) => {
+                         if (sourceClip.duration > 0 && sourceIsPlaying) {
+                            const pct = (e.currentTarget.currentTime / (sourceClip.duration / 15)) * 100;
+                            setSourcePlayheadPct(pct);
+                         }
+                      }}
+                      ref={(el) => {
+                         if (el) {
+                            const expectedTime = (sourcePlayheadPct / 100) * (sourceClip.duration / 15);
+                            if (Math.abs(el.currentTime - expectedTime) > 0.3 && !sourceIsPlaying) {
+                               el.currentTime = expectedTime;
+                            }
+                            if (sourceIsPlaying && el.paused) {
+                               let p = el.play();
+                               if (p !== undefined) p.catch(()=>{});
+                            }
+                            if (!sourceIsPlaying && !el.paused) el.pause();
+                         }
+                      }}
+                   />
+                ) : sourceClip ? (
+                   <div style={{position:'absolute',inset:'8%',border:'1px solid rgba(255,255,255,0.04)',display:'flex',alignItems:'center',justifyContent:'center',background:`${sourceClip.color}15`,borderRadius:'4px',zIndex:2}}>
                       <span style={{fontSize:'32px',opacity:0.8}}>{sourceClip.type==='video'?'🎬':'🎵'}</span>
                    </div>
                 ) : (
                    <div style={{textAlign:'center',color:'var(--text-muted)'}}>
                      <div style={{fontSize:'28px',marginBottom:'6px',opacity:0.15}}>🎬</div>
-                     <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Double-click clip to preview</div>
+                     <div style={{fontSize:'10px',color:'var(--text-secondary)'}}>Double-click clip or drag to preview</div>
                    </div>
                 )}
               </div>
@@ -1683,13 +1806,13 @@ export default function EditorPage() {
                 </span>
                 <div style={{flex:1,display:'flex',justifyContent:'center',gap:'3px',alignItems:'center'}}>
                   <button title="Mark In (I)" onClick={()=>setSourceInPct(sourcePlayheadPct)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'{I}'}</button>
-                  {['⏮','⏪','▶','⏩','⏭'].map(ic=><button key={ic} style={{background:ic==='▶'?'var(--accent)':'none',border:'none',color:ic==='▶'?'white':'var(--text-secondary)',width:ic==='▶'?'20px':'auto',height:ic==='▶'?'20px':'auto',borderRadius:'50%',cursor:'pointer',fontSize:ic==='▶'?'8px':'11px',display:'flex',alignItems:'center',justifyContent:'center'}}>{ic}</button>)}
+                  {['⏮','⏪', sourceIsPlaying?'⏸':'▶','⏩','⏭'].map(ic=><button key={ic} onClick={() => { if(ic==='▶'||ic==='⏸') setSourceIsPlaying(!sourceIsPlaying); }} style={{background:(ic==='▶'||ic==='⏸')?'var(--accent)':'none',border:'none',color:(ic==='▶'||ic==='⏸')?'white':'var(--text-secondary)',width:(ic==='▶'||ic==='⏸')?'20px':'auto',height:(ic==='▶'||ic==='⏸')?'20px':'auto',borderRadius:'50%',cursor:'pointer',fontSize:(ic==='▶'||ic==='⏸')?'8px':'11px',display:'flex',alignItems:'center',justifyContent:'center'}}>{ic}</button>)}
                   <button title="Mark Out (O)" onClick={()=>setSourceOutPct(sourcePlayheadPct)} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px',padding:'2px 3px',borderRadius:'3px',fontFamily:'monospace'}}>{'O}'}</button>
                 </div>
                 {/* Drag video/audio only icons */}
                 <div style={{display:'flex',gap:'3px'}}>
-                  <button draggable onDragStart={e=>handleDragStartNewItem(e,{type:'video',label:sourceClip?.label||'',color:sourceClip?.color||'',duration:sourceClip?Math.abs(sourceOutPct-sourceInPct)/100*sourceClip.duration:100})} title="Drag Video Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:sourceClip?'grab':'default',fontSize:'9px',padding:'2px 4px',borderRadius:'3px',opacity:sourceClip?1:0.3}}>V</button>
-                  <button draggable onDragStart={e=>handleDragStartNewItem(e,{type:'audio',label:sourceClip?.label||'',color:sourceClip?.color||'',duration:sourceClip?Math.abs(sourceOutPct-sourceInPct)/100*sourceClip.duration:100})} title="Drag Audio Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:sourceClip?'grab':'default',fontSize:'9px',padding:'2px 4px',borderRadius:'3px',opacity:sourceClip?1:0.3}}>A</button>
+                  <button draggable onDragStart={e=>handleDragStartNewItem(e,{type:'video',label:sourceClip?.label||'',color:sourceClip?.color||'',duration:sourceClip?Math.abs(sourceOutPct-sourceInPct)/100*sourceClip.duration:100, url:sourceClip?.url, sourceOffset:sourceClip?Math.min(sourceInPct,sourceOutPct)/100*sourceClip.duration:0})} title="Drag Video Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:sourceClip?'grab':'default',fontSize:'9px',padding:'2px 4px',borderRadius:'3px',opacity:sourceClip?1:0.3}}>V</button>
+                  <button draggable onDragStart={e=>handleDragStartNewItem(e,{type:'audio',label:sourceClip?.label||'',color:sourceClip?.color||'',duration:sourceClip?Math.abs(sourceOutPct-sourceInPct)/100*sourceClip.duration:100, url:sourceClip?.url, sourceOffset:sourceClip?Math.min(sourceInPct,sourceOutPct)/100*sourceClip.duration:0})} title="Drag Audio Only" style={{background:'var(--bg-card)',border:'1px solid var(--border)',color:'var(--text-muted)',cursor:sourceClip?'grab':'default',fontSize:'9px',padding:'2px 4px',borderRadius:'3px',opacity:sourceClip?1:0.3}}>A</button>
                 </div>
               </div>
             </div>
@@ -1703,11 +1826,42 @@ export default function EditorPage() {
                   <button title="Full Screen" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'10px'}}>⛶</button>
                 </div>
               </div>
-              <div style={{flex:1,background:'#020204',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden'}}>
+              <div style={{flex:1,background:'#020204',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden',minWidth:0,minHeight:0}}>
                 <div style={{position:'absolute',inset:0,background:'linear-gradient(135deg,#0a0020,#000510,#050005)'}}/>
-                <div style={{position:'relative',zIndex:1}}>
-                  <div style={{fontSize:'10px',color:'rgba(255,255,255,0.07)',fontFamily:'Syne,sans-serif',letterSpacing:'3px'}}>STRIKE THE HEAVENS</div>
-                </div>
+                {(() => {
+                   const playheadUnits = playheadPos / (zoom * 0.14);
+                   const activeVidClip = clips.filter(c => c.type === 'video' && c.url && playheadUnits >= c.start && playheadUnits < c.start + c.width)
+                      .sort((a,b) => b.trackId - a.trackId)[0];
+                   if (activeVidClip) {
+                      return (
+                         <video 
+                            src={activeVidClip.url}
+                            style={{width:'100%', height:'100%', objectFit:'contain', position:'relative', zIndex:2}}
+                            muted
+                            ref={(el) => {
+                               if (el) {
+                                  const localTime = (playheadUnits - activeVidClip.start) + (activeVidClip.sourceOffset || 0);
+                                  const expectedSeconds = localTime / 15;
+                                  if (Math.abs(el.currentTime - expectedSeconds) > 0.3 && !isPlaying) {
+                                     el.currentTime = expectedSeconds;
+                                  }
+                                  if (isPlaying && el.paused) {
+                                     let p = el.play();
+                                     if (p !== undefined) p.catch(()=>{});
+                                  }
+                                  if (!isPlaying && !el.paused) el.pause();
+                               }
+                            }}
+                         />
+                      );
+                   }
+                   return (
+                     <div style={{position:'relative',zIndex:1}}>
+                       <div style={{fontSize:'10px',color:'rgba(255,255,255,0.07)',fontFamily:'Syne,sans-serif',letterSpacing:'3px'}}>STRIKE THE HEAVENS</div>
+                     </div>
+                   );
+                })()}
+
                 <div style={{position:'absolute',inset:'8%',border:'1px solid rgba(255,255,255,0.04)',pointerEvents:'none'}}/>
                 {/* Scope mini */}
                 {workspace==='color' && (
@@ -1829,7 +1983,7 @@ export default function EditorPage() {
                 </div>
 
                 {/* Tracks */}
-                <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} onDragOver={handleDragOver} onDrop={handleDrop} onDragLeave={()=>setDragNewPos(null)} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
+                <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} onDragOver={handleDragOver} onDrop={handleDrop} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
                   {tracks.map(track=>(
                     <div key={track.id} style={{
                       height:`${track.height}px`,
