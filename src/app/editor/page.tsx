@@ -852,7 +852,9 @@ function HistoryPanel({history,onJumpTo}:{history:{past:HistoryEntry[];present:H
     return `${Math.floor(s/3600)}h ago`;
   };
   const actionIcon: Record<string,string> = {
-    'Add':'➕','Cut':'✂','Delete':'🗑','Move':'↔','Trim':'◀','Source':'📥','Ripple':'⟪','Drag':'🖱',
+    'Add':'➕','Cut':'✂','Delete':'🗑','Move':'↔','Trim':'◀▶','Source':'📥','Ripple':'⟪','Drag':'🖱',
+    'Split':'✂','Import':'📂','Insert':'⤵','Overwrite':'⤴','Change':'⚙','Apply':'✨','Set':'⚡',
+    'Clear':'🗑','Undo':'↩','Redo':'↪','Update':'📝','Create':'➕','Remove':'✕','Ripple Delete':'🗑',
   };
   const getIcon = (label:string) => {
     const key = Object.keys(actionIcon).find(k => label.startsWith(k));
@@ -1121,7 +1123,8 @@ export default function EditorPage() {
   const [isPlaying,setIsPlaying]       = useState(false);
   const [playheadPos,setPlayheadPos]   = useState(38);
   const [zoom,setZoom]                 = useState(1);
-  const [selectedClip,setSelectedClip] = useState<number|null>(null);
+  const [selectedClipIds, setSelectedClipIds] = useState<number[]>([]);
+  const [marqueeSelection, setMarqueeSelection] = useState<{ startX: number; startY: number; currentX: number; currentY: number; isActive: boolean } | null>(null);
   const [timecode,setTimecode]         = useState('00:00:38;14');
   const [showExport,setShowExport]     = useState(false);
   const [notification,setNotification] = useState<string|null>(null);
@@ -1144,7 +1147,7 @@ export default function EditorPage() {
   const [sourceInPct, setSourceInPct]     = useState(0);
   const [sourceOutPct, setSourceOutPct]   = useState(100);
 
-  const [dragState, setDragState]       = useState<{clipId:number;startX:number;startStart:number}|null>(null);
+  const [dragState, setDragState]       = useState<{clipId:number;startX:number;clipOffsets:Record<number, {start:number, trackId:number}>}|null>(null);
   const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
   const [dragNewPos, setDragNewPos]     = useState<{trackId:number, start:number}|null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<number|null>(null);
@@ -1157,8 +1160,8 @@ export default function EditorPage() {
   // Ref to store drag item data — bypasses React stale closure in drag event handlers
   const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
 
-  const stateRef = useRef<{clips:Clip[], selectedClip:number|null}>({ clips, selectedClip });
-  useEffect(() => { stateRef.current = { clips, selectedClip }; }, [clips, selectedClip]);
+  const stateRef = useRef<{clips:Clip[], selectedClipIds:number[]}>({ clips, selectedClipIds });
+  useEffect(() => { stateRef.current = { clips, selectedClipIds }; }, [clips, selectedClipIds]);
 
   // Ref for clip history (for undo during drag operations)
   const historyRef = useRef<Clip[][]>([]);
@@ -1191,23 +1194,13 @@ export default function EditorPage() {
            setIsPlaying(p=>!p);
         }
         if(e.key==='Delete'||e.key==='Backspace') {
-           const { clips: curClips, selectedClip: curSel } = stateRef.current;
-           if (curSel) {
+           const { clips: curClips, selectedClipIds: curSels } = stateRef.current;
+           if (curSels.length > 0) {
               e.preventDefault();
-              const targetClip = curClips.find(c => c.id === curSel);
-              if (targetClip) {
-                 const gapWidth = targetClip.width;
-                 const newClips = curClips.filter(c => c.id !== curSel).map(c => {
-                    if (c.trackId === targetClip.trackId && c.start >= targetClip.start) {
-                       return { ...c, start: Math.max(0, c.start - gapWidth) };
-                    }
-                    return c;
-                 });
-                 applyAction(`Delete "${targetClip.label}"`, newClips);
-                 setSelectedClip(null);
-                 setNotification('Delete & Ripple Close');
-                 setTimeout(()=>setNotification(null),2000);
-              }
+              const newClips = curClips.filter(c => !curSels.includes(c.id));
+              applyAction(`Delete ${curSels.length} clip(s)`, newClips);
+              setSelectedClipIds([]);
+              notify(`Deleted ${curSels.length} clip(s)`);
            }
         }
       }
@@ -1218,6 +1211,11 @@ export default function EditorPage() {
          }
          else if(e.key==='y'||e.key==='Y'){ e.preventDefault(); redo(); }
          else if(e.key==='i'||e.key==='I'){ e.preventDefault(); fileInputRef.current?.click(); }
+         else if(e.key==='a'||e.key==='A'){
+            e.preventDefault();
+            setSelectedClipIds(stateRef.current.clips.map(c => c.id));
+            notify('Selected all clips');
+         }
       }
     };
     window.addEventListener('keydown',onKey);
@@ -1401,7 +1399,27 @@ export default function EditorPage() {
   const handleTLClick=(e:React.MouseEvent<HTMLDivElement>)=>{
     if(!tlRef.current) return;
     const r=tlRef.current.getBoundingClientRect();
-    setPlayheadPos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
+    const pct=Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100));
+    setPlayheadPos(pct);
+    if(activeTool==='select') {
+      setSelectedClipIds([]);
+    }
+  };
+
+  const handleTracksMouseDown = (e: React.MouseEvent) => {
+    if (activeTool !== 'select' || e.button !== 0) return;
+    
+    // Start marquee selection if clicking on tracks background
+    const r = tracksAreaRef.current?.getBoundingClientRect();
+    if (r) {
+      setMarqueeSelection({
+        startX: e.clientX,
+        startY: e.clientY,
+        currentX: e.clientX,
+        currentY: e.clientY,
+        isActive: false 
+      });
+    }
   };
 
   // ── RAZOR: split clip at click position ──
@@ -1418,22 +1436,22 @@ export default function EditorPage() {
     const nextClips = clips.filter(c=>c.id!==clip.id).concat([left,right]);
     applyAction(`Cut clip "${clip.label}"`, nextClips);
     setActiveTool('select');
-    setSelectedClip(id1);
+    setSelectedClipIds([id1]);
     notify('✂ Clip split · Ctrl+Z to undo');
   };
 
   // ── DRAG: global mouse-up ends clip drag ──
   useEffect(()=>{
-    const onUp=()=>{ 
+    const onUp=()=>{
        dragNewItemRef.current = null;  // always clear on mouseup
        setDragState(null); setDragNewState(null); setDragNewPos(null); setDragOverTrackId(null);
        setEdgeDragState(null); setTrimTooltip(null);
        setSnapLineUnits(null);
+       setMarqueeSelection(null);
     };
     window.addEventListener('mouseup',onUp);
     return ()=>window.removeEventListener('mouseup',onUp);
   },[]);
-
   // ── NEW CLIP DRAG START ──
   const handleDragStartNewItem = (e:React.DragEvent, item:{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}) => {
     e.dataTransfer.setData('text/plain', item.label);
@@ -1555,12 +1573,53 @@ export default function EditorPage() {
     applyAction(`Add clip "${newClip.label}"`, nextClips);
     setDragNewState(null);
     setDragNewPos(null);
-    setSelectedClip(newClip.id);
+    setSelectedClipIds([newClip.id]);
     notify(`Drop: "${newClip.label}" added & snapped`);
+
   };
 
   // ── RAZOR line + MOVE/CROSS-TRACK drag + EDGE TRIMMING ──
   const handleTracksMouseMove=(e:React.MouseEvent<HTMLDivElement>)=>{
+    // -- MARQUEE SELECTION --
+    if (marqueeSelection) {
+      const r = tracksAreaRef.current?.getBoundingClientRect();
+      if (r) {
+        const currentX = e.clientX;
+        const currentY = e.clientY;
+        const isActive = Math.abs(currentX - marqueeSelection.startX) > 5 || Math.abs(currentY - marqueeSelection.startY) > 5;
+        
+        setMarqueeSelection(prev => prev ? { ...prev, currentX, currentY, isActive: isActive || prev.isActive } : null);
+        
+        if (isActive || marqueeSelection.isActive) {
+          const mLeft = Math.min(marqueeSelection.startX, currentX);
+          const mRight = Math.max(marqueeSelection.startX, currentX);
+          const mTop = Math.min(marqueeSelection.startY, currentY);
+          const mBottom = Math.max(marqueeSelection.startY, currentY);
+
+          const tlRect = tlRef.current?.getBoundingClientRect();
+          if (tlRect) {
+            const newSels: number[] = [];
+            let currentTrackY = r.top;
+            tracks.forEach(track => {
+              const trackTop = currentTrackY;
+              const trackBottom = currentTrackY + track.height;
+              const clipsOnTrack = stateRef.current.clips.filter(c => c.trackId === track.id);
+              clipsOnTrack.forEach(clip => {
+                 const clipLeft = tlRect.left + (clip.start * zoom * 0.14 / 100 * tlRect.width);
+                 const clipRight = clipLeft + (clip.width * zoom * 0.14 / 100 * tlRect.width);
+                 const intersectsX = clipLeft < mRight && clipRight > mLeft;
+                 const intersectsY = trackTop < mBottom && trackBottom > mTop;
+                 if (intersectsX && intersectsY) newSels.push(clip.id);
+              });
+              currentTrackY += track.height;
+            });
+            setSelectedClipIds(newSels);
+          }
+        }
+      }
+      return;
+    }
+
     // –– EDGE DRAG: Trimming clip ––
     if(edgeDragState && tlRef.current) {
        const dx = e.clientX - edgeDragState.startX;
@@ -1632,61 +1691,12 @@ export default function EditorPage() {
     // –– MOVE: drag clip (horizontal + cross-track vertical) ––
     if(dragState&&tlRef.current&&tracksAreaRef.current){
       const dx=e.clientX-dragState.startX;
-
-      // Horizontal position
       const r=tlRef.current.getBoundingClientRect();
       const deltaUnits=Math.abs(dx)>2?Math.round((dx/r.width)*100/(zoom*0.14)):0;
-      let newStart=Math.max(0,dragState.startStart+deltaUnits);
 
-      // Find the dragged clip to check its type
       const draggedClip=clips.find(c=>c.id===dragState.clipId);
       if(!draggedClip) return;
 
-      if(snappingEnabled) {
-        const thresholdUnits = (8 * 100) / (r.width * zoom * 0.14);
-        const sequenceEnd = Math.max(0, ...clips.map(c => c.start + c.width));
-        const playheadUnits = playheadPos / (zoom * 0.14);
-        const otherClips = clips.filter(c => c.id !== dragState.clipId);
-        
-        const candidatePoints = [
-           0,
-           sequenceEnd,
-           playheadUnits,
-           ...otherClips.map(c => c.start),
-           ...otherClips.map(c => c.start + c.width)
-        ];
-        
-        let bestDist = Infinity;
-        let bestSnapUnit: number|null = null;
-        let startShift = 0;
-        
-        for (const p of candidatePoints) {
-           const leftDist = Math.abs(p - newStart);
-           if (leftDist < bestDist && leftDist <= thresholdUnits) {
-              bestDist = leftDist;
-              bestSnapUnit = p;
-              startShift = p - newStart;
-           }
-           const rightDist = Math.abs(p - (newStart + draggedClip.width));
-           if (rightDist < bestDist && rightDist <= thresholdUnits) {
-              bestDist = rightDist;
-              bestSnapUnit = p;
-              startShift = p - (newStart + draggedClip.width);
-           }
-        }
-        
-        if (bestSnapUnit !== null) {
-           newStart += startShift;
-           setSnapLineUnits(bestSnapUnit);
-        } else {
-           setSnapLineUnits(null);
-        }
-      } else {
-        setSnapLineUnits(null);
-      }
-
-      // Determine valid target trackId
-      // Vertical: which track is cursor over?
       const areaRect=tracksAreaRef.current.getBoundingClientRect();
       let relY=e.clientY-areaRect.top;
       let targetTrack:Track|null=null;
@@ -1695,19 +1705,28 @@ export default function EditorPage() {
         relY-=t.height;
       }
       
-      let newTrackId=draggedClip.trackId;
-      if(targetTrack&&targetTrack.type!=='caption'&&targetTrack.type===draggedClip.type){
-        newTrackId=targetTrack.id;
+      let trackDelta = 0;
+      if (targetTrack && targetTrack.type === draggedClip.type) {
+         trackDelta = targetTrack.id - draggedClip.trackId;
       }
 
-      const moved=Math.abs(dx)>2||newTrackId!==draggedClip.trackId;
-      if(moved){
-        dragMovedRef.current=true;
-        setDragOverTrackId(newTrackId);
-        setClips(prev=>prev.map(c=>
-          c.id===dragState.clipId?{...c,start:newStart,trackId:newTrackId}:c
-        ));
-      }
+      setClips(prev => prev.map(c => {
+         if (dragState.clipOffsets[c.id]) {
+            const initial = dragState.clipOffsets[c.id];
+            let newStart = Math.max(0, initial.start + deltaUnits);
+            let newTrackId = initial.trackId + trackDelta;
+            
+            // Ensure track exists and is valid type
+            const tt = tracks.find(t => t.id === newTrackId);
+            if (!tt || tt.type !== c.type) {
+               newTrackId = initial.trackId;
+            }
+            
+            return { ...c, start: newStart, trackId: newTrackId };
+         }
+         return c;
+      }));
+      dragMovedRef.current=true;
       return;
     }
     // –– RAZOR: red cursor line ––
@@ -1716,12 +1735,12 @@ export default function EditorPage() {
     setRazorLinePos(Math.max(0,Math.min(100,((e.clientX-r.left)/r.width)*100)));
   };
 
-  const selectedClipObj = clips?.find(c=>c.id===selectedClip);
+  const selectedClipObj = clips?.find(c=>selectedClipIds.includes(c.id));
 
   if(isMobile) return (
     <MobileEditor clips={clips} isPlaying={isPlaying} setIsPlaying={setIsPlaying}
       playheadPct={playheadPos} setPlayheadPct={setPlayheadPos}
-      timecode={timecode} selectedClip={selectedClip} setSelectedClip={setSelectedClip}
+      timecode={timecode} selectedClip={selectedClipIds[0] || null} setSelectedClip={(id) => setSelectedClipIds(id ? [id] : [])}
       onImportMedia={handleImportMedia} onImportTrack={handleImportTrack}
       showExport={showExport} setShowExport={setShowExport} notification={notification}
     />
@@ -1737,12 +1756,15 @@ export default function EditorPage() {
           <div style={{width:'20px',height:'20px',borderRadius:'4px',background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'10px',fontWeight:900,fontFamily:'Syne,sans-serif',color:'white',boxShadow:'0 0 10px var(--accent-glow)'}}>E</div>
           <span style={{fontFamily:'Syne,sans-serif',fontWeight:800,fontSize:'12px',letterSpacing:'1px',color:'var(--text-primary)'}}>ECLIPSO</span>
         </Link>
-        {['File','Edit','Clip','Sequence','Markers','Graphics','View','Window','Help'].map(m=>(
-          <button key={m} style={{padding:'0 8px',height:'100%',background:'none',border:'none',color:'var(--text-secondary)',fontSize:'11px',cursor:'pointer',fontFamily:'DM Sans,sans-serif',transition:'all 0.15s',whiteSpace:'nowrap'}}
-            onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';e.currentTarget.style.color='var(--text-primary)';}}
-            onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='var(--text-secondary)';}}
-          >{m}</button>
-        ))}
+        {['File','Edit','Clip','Sequence','Markers','Graphics','View','Window','Help'].map(m=>{
+          const isWindow = m === 'Window';
+          return (
+            <button key={m} onClick={isWindow?()=>setLeftTab('history'):undefined} style={{padding:'0 8px',height:'100%',background:'none',border:'none',color:isWindow&&leftTab==='history'?'var(--accent)':'var(--text-secondary)',fontSize:'11px',cursor:'pointer',fontFamily:'DM Sans,sans-serif',transition:'all 0.15s',whiteSpace:'nowrap'}}
+              onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';e.currentTarget.style.color=isWindow&&leftTab==='history'?'var(--accent)':'var(--text-primary)';}}
+              onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color=isWindow&&leftTab==='history'?'var(--accent)':'var(--text-secondary)';}}
+            >{m}{isWindow&&leftTab==='history'?' ●':''}</button>
+          );
+        })}
         <div style={{flex:1,textAlign:'center'}}>
           <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>Strike_the_Heavens</span>
           <span style={{fontSize:'10px',color:'var(--accent)',marginLeft:'6px'}}>● Edited</span>
@@ -2111,7 +2133,7 @@ export default function EditorPage() {
                 </div>
 
                 {/* Tracks */}
-                <div ref={tracksAreaRef} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} onDragOver={handleDragOver} onDrop={handleDrop} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
+                <div ref={tracksAreaRef} onMouseDown={handleTracksMouseDown} onClick={handleTLClick} onMouseMove={handleTracksMouseMove} onMouseLeave={()=>setRazorLinePos(null)} onDragOver={handleDragOver} onDrop={handleDrop} style={{position:'relative',cursor:activeTool==='razor'?'none':'default'}}>
                   {tracks.map(track=>(
                     <div key={track.id} style={{
                       height:`${track.height}px`,
@@ -2158,7 +2180,7 @@ export default function EditorPage() {
                                 e.stopPropagation();
                                 setGapContextMenu({ x: e.clientX, y: e.clientY, gap });
                              }}
-                             onClick={e => { e.stopPropagation(); setSelectedClip(null); }}
+                             onClick={e => { e.stopPropagation(); setSelectedClipIds([]); }}
                              style={{
                                 position:'absolute',
                                 left:`${gap.start*zoom*0.14}%`,
@@ -2209,23 +2231,44 @@ export default function EditorPage() {
                       )}
 
                       {/* Clips on this track */}
-                      {clips.filter(c=>c.trackId===track.id).map(clip=>(
+                      {clips.filter(c=>c.trackId===track.id).map(clip=>{
+                        const isSelected = selectedClipIds.includes(clip.id);
+                        return (
                         <div key={clip.id}
                           onMouseDown={e=>{
                             if(activeTool==='select'&&e.button===0){
                               e.stopPropagation();
                               dragMovedRef.current=false;
+                              
+                              let newSelections = [...selectedClipIds];
+                              if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                                if (isSelected) {
+                                  newSelections = newSelections.filter(id => id !== clip.id);
+                                } else {
+                                  newSelections.push(clip.id);
+                                }
+                              } else {
+                                if (!isSelected) {
+                                  newSelections = [clip.id];
+                                }
+                              }
+                              setSelectedClipIds(newSelections);
+
                               // save state for undo before drag
                               historyRef.current=[...historyRef.current.slice(-30),[...clips]];
-                              setDragState({clipId:clip.id,startX:e.clientX,startStart:clip.start});
-                              setSelectedClip(clip.id);
+                              
+                              const offsets: Record<number, {start:number, trackId:number}> = {};
+                              newSelections.forEach(id => {
+                                const c = clips.find(x => x.id === id);
+                                if (c) offsets[id] = { start: c.start, trackId: c.trackId };
+                              });
+                              setDragState({clipId:clip.id, startX:e.clientX, clipOffsets: offsets});
                             }
                           }}
                           onClick={e=>{
-                            // suppress click if this was a real drag
                             if(dragMovedRef.current){ dragMovedRef.current=false; return; }
                             if(activeTool==='razor'){ handleRazorSplit(e,clip); }
-                            else{ e.stopPropagation(); setSelectedClip(clip.id===selectedClip?null:clip.id); }
+                            else { e.stopPropagation(); }
                           }}
                           style={{
                           position:'absolute',
@@ -2233,12 +2276,12 @@ export default function EditorPage() {
                           width:`${clip.width*zoom*0.14}%`,
                           top: track.type==='caption'?'2px':'4px',
                           bottom: track.type==='caption'?'2px':'4px',
-                          background:`${clip.color}20`,
-                          border:`1px solid ${clip.color}${selectedClip===clip.id?'ee':'50'}`,
+                          background:`${clip.color}${isSelected?'40':'20'}`,
+                          border:`1px solid ${clip.color}${isSelected?'ee':'50'}`,
                           borderRadius: track.type==='caption'?'3px':'5px',
                           overflow:'hidden',
                           cursor:dragState?.clipId===clip.id?'grabbing':activeTool==='select'?'grab':activeTool==='razor'?'crosshair':'pointer',
-                          boxShadow:selectedClip===clip.id?`0 0 0 1.5px ${clip.color}, inset 0 0 0 1px ${clip.color}40`:'none',
+                          boxShadow:isSelected?`0 0 0 1.5px ${clip.color}, inset 0 0 0 1px ${clip.color}40`:'none',
                           transition:'border-color 0.1s',
                           display:'flex', flexDirection:'column',
                         }}>
@@ -2264,21 +2307,21 @@ export default function EditorPage() {
                                 dragMovedRef.current=false;
                                 historyRef.current=[...historyRef.current.slice(-30),[...clips]];
                                 setEdgeDragState({clipId:clip.id, edge:'left', startX:e.clientX, initialStart:clip.start, initialWidth:clip.width, sourceWidth:clip.sourceWidth||clip.width});
-                                setSelectedClip(clip.id);
+                                setSelectedClipIds([clip.id]);
                               }} style={{position:'absolute',left:0,top:0,bottom:0,width:'8px',cursor:activeTool==='ripple'?'url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22><text y=%2220%22 font-size=%2220%22 fill=%22%23FFD60A%22>⟪</text></svg>") 12 12, ew-resize':'col-resize',zIndex:10}}/>
                               <div onMouseDown={e=>{
                                 e.stopPropagation();
                                 dragMovedRef.current=false;
                                 historyRef.current=[...historyRef.current.slice(-30),[...clips]];
                                 setEdgeDragState({clipId:clip.id, edge:'right', startX:e.clientX, initialStart:clip.start, initialWidth:clip.width, sourceWidth:clip.sourceWidth||clip.width});
-                                setSelectedClip(clip.id);
+                                setSelectedClipIds([clip.id]);
                               }} style={{position:'absolute',right:0,top:0,bottom:0,width:'8px',cursor:activeTool==='ripple'?'url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22><text y=%2220%22 font-size=%2220%22 fill=%22%23FFD60A%22>⟫</text></svg>") 12 12, ew-resize':'col-resize',zIndex:10}}/>
                             </>
                           )}
                           <div style={{position:'absolute',left:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to right,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
                           <div style={{position:'absolute',right:0,top:0,bottom:0,width:'6px',background:`linear-gradient(to left,${clip.color}40,transparent)`,pointerEvents:'none'}}/>
                         </div>
-                      ))}
+                      )})}
 
                       {/* ── RAZOR LINE ── */}
                       {activeTool==='razor'&&razorLinePos!==null&&(
@@ -2298,6 +2341,22 @@ export default function EditorPage() {
                       <div style={{position:'absolute',left:`${playheadPos}%`,top:0,bottom:0,width:'1px',background:'var(--yellow)',opacity:0.85,zIndex:8,pointerEvents:'none',boxShadow:'0 0 4px rgba(255,214,10,0.4)'}}/>
                     </div>
                   ))}
+
+                  {/* MARQUEE SELECTION OVERLAY */}
+                  {marqueeSelection?.isActive && (
+                    <div style={{
+                       position:'fixed',
+                       left:`${Math.min(marqueeSelection.startX, marqueeSelection.currentX)}px`,
+                       top:`${Math.min(marqueeSelection.startY, marqueeSelection.currentY)}px`,
+                       width:`${Math.abs(marqueeSelection.startX - marqueeSelection.currentX)}px`,
+                       height:`${Math.abs(marqueeSelection.startY - marqueeSelection.currentY)}px`,
+                       background:'rgba(124,92,255,0.15)',
+                       border:'1px solid var(--accent)',
+                       borderRadius:'2px',
+                       zIndex:100,
+                       pointerEvents:'none'
+                    }} />
+                  )}
                 </div>
               </div>
             </div>
@@ -2422,6 +2481,12 @@ export default function EditorPage() {
         <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif'}}>Duration: 02:01;22</span>
         <span style={{fontSize:'9px',color:'var(--text-muted)'}}>In: 00;00;00;00 · Out: 00;02;01;22</span>
         <div style={{flex:1}}/>
+        {/* Undo/Redo indicators */}
+        <div style={{display:'flex',gap:'6px',alignItems:'center',marginRight:'8px'}}>
+          <button onClick={undo} disabled={history.past.length===0} title="Undo (Ctrl+Z)" style={{background:'none',border:'none',cursor:history.past.length>0?'pointer':'not-allowed',fontSize:'11px',opacity:history.past.length>0?1:0.3,color:history.past.length>0?'var(--text-secondary)':'var(--text-muted)',padding:'2px 4px',borderRadius:'3px'}}>↩</button>
+          <button onClick={redo} disabled={history.future.length===0} title="Redo (Ctrl+Y)" style={{background:'none',border:'none',cursor:history.future.length>0?'pointer':'not-allowed',fontSize:'11px',opacity:history.future.length>0?1:0.3,color:history.future.length>0?'var(--text-secondary)':'var(--text-muted)',padding:'2px 4px',borderRadius:'3px'}}>↪</button>
+          <span style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'monospace',marginLeft:'4px'}}>{history.past.length}/{history.future.length}</span>
+        </div>
         {/* Audio level meters */}
         <div style={{display:'flex',gap:'2px',alignItems:'center'}}>
           <span style={{fontSize:'8px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',marginRight:'3px'}}>L</span>
