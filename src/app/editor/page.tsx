@@ -11,7 +11,9 @@ type RightTab = 'effectcontrols'|'info';
 type Workspace = 'editing'|'color'|'audio'|'effects'|'all';
 type MobileTab = 'videos'|'music'|'titles'|null;
 type Track = { id:number; type:'video'|'audio'|'caption'; label:string; color:string; muted:boolean; solo:boolean; locked:boolean; height:number };
-type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number; url?:string; sourceOffset?:number };
+type Interpolation = 'linear'|'ease-in'|'ease-out';
+type Keyframe = { id:number; time:number; value:number; interpolation:Interpolation };
+type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number; url?:string; sourceOffset?:number; x?:number; y?:number; scale?:number; rotation?:number; anchorX?:number; anchorY?:number; opacity?:number; keyframes?:Record<string, Keyframe[]> };
 type Marker = { id:number; time:number; label:string; color:string };
 type HistoryEntry = { id:number; label:string; clips:Clip[]; timestamp:number };
 type HistoryState = { past:HistoryEntry[]; present:HistoryEntry; future:HistoryEntry[] };
@@ -155,6 +157,29 @@ function initTracks(): Track[] {
     {id:5, type:'audio',   label:'A2', color:'#00FF94', muted:false, solo:false, locked:false, height:44},
     {id:6, type:'audio',   label:'A3', color:'#FF3B82', muted:false, solo:false, locked:false, height:36},
   ];
+}
+
+function getClipValue(clip: Clip, prop: string, sequenceTime: number): number {
+  const kfs = clip.keyframes?.[prop];
+  const staticVal = (clip as any)[prop] ?? (prop === 'scale' || prop === 'opacity' ? 100 : 0);
+  if (!kfs || kfs.length === 0) return staticVal;
+
+  const time = sequenceTime - clip.start;
+  const sorted = [...kfs].sort((a, b) => a.time - b.time);
+
+  const nextIdx = sorted.findIndex(k => k.time > time);
+  if (nextIdx === -1) return sorted[sorted.length - 1].value;
+  if (nextIdx === 0) return sorted[0].value;
+
+  const prev = sorted[nextIdx - 1];
+  const next = sorted[nextIdx];
+
+  const t = (time - prev.time) / (next.time - prev.time);
+  let easeT = t;
+  if (next.interpolation === 'ease-in') easeT = t * t;
+  else if (next.interpolation === 'ease-out') easeT = 1 - (1 - t) * (1 - t);
+
+  return prev.value + (next.value - prev.value) * easeT;
 }
 
 function initClips(): Clip[] {
@@ -668,94 +693,219 @@ function PanelMarkers({markers,onJump}:{markers:Marker[];onJump:(t:number)=>void
 // ═══════════════════════════════════════════════════
 //  RIGHT PANEL — EFFECT CONTROLS
 // ═══════════════════════════════════════════════════
-function EffectControls({clip}:{clip:Clip|undefined}) {
-  const props = [
-    {label:'Position',  sub:'X',  val:'960.0', unit:'px', color:'#00E5FF'},
-    {label:'',          sub:'Y',  val:'540.0', unit:'px', color:'#00E5FF'},
-    {label:'Scale',     sub:'',   val:'100.0', unit:'%',  color:'#00FF94'},
-    {label:'Rotation',  sub:'',   val:'0.0',   unit:'°',  color:'#FFD60A'},
-    {label:'Anchor',    sub:'X',  val:'960.0', unit:'px', color:'#FF8C00'},
-    {label:'',          sub:'Y',  val:'540.0', unit:'px', color:'#FF8C00'},
-  ];
-  const appliedFx = clip ? [
-    {name:'Motion',    on:true},
-    {name:'Opacity',   on:true},
-  ] : [];
+function NumberScrubber({ value, onChange, min = -Infinity, max = Infinity, step = 1, unit = '' }: { value: number, onChange: (v: number) => void, min?: number, max?: number, step?: number, unit?: string }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempVal, setTempVal] = useState(String(value));
 
-  if(!clip) return (
-    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',textAlign:'center'}}>
+  useEffect(() => { setTempVal(String(value)); }, [value]);
+
+  const handleDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startVal = value;
+
+    const move = (ev: MouseEvent) => {
+      let delta = (ev.clientX - startX) * step;
+      if (ev.shiftKey) delta *= 10;
+      let newVal = startVal + delta;
+      if (newVal < min) newVal = min;
+      if (newVal > max) newVal = max;
+      onChange(Math.round(newVal * 10) / 10);
+    };
+
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
+  const handleBlur = () => {
+    setIsEditing(false);
+    let newVal = Number(tempVal);
+    if (isNaN(newVal)) newVal = value;
+    if (newVal < min) newVal = min;
+    if (newVal > max) newVal = max;
+    onChange(newVal);
+  };
+
+  if (isEditing) {
+    return (
+      <input 
+        autoFocus 
+        value={tempVal} 
+        onChange={e => setTempVal(e.target.value)} 
+        onBlur={handleBlur} 
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        style={{
+          width: '100%', background: 'transparent', border: 'none', color: 'var(--text-primary)', 
+          fontFamily: 'monospace', fontSize: '10px', outline: 'none'
+        }}
+      />
+    );
+  }
+
+  return (
+    <span 
+      onMouseDown={handleDrag} 
+      onClick={() => setIsEditing(true)} 
+      style={{ cursor: 'ew-resize', color: 'var(--text-primary)', userSelect: 'none', flex: 1, height: '100%', display: 'flex', alignItems: 'center' }}
+    >
+      {Number(value).toFixed(1)}{unit}
+    </span>
+  );
+}
+
+function RotationDial({ value, onChange }: { value: number, onChange: (v: number) => void }) {
+  const handleDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startVal = value;
+
+    const move = (ev: MouseEvent) => {
+      let delta = (startY - ev.clientY);
+      if (ev.shiftKey) delta *= 5;
+      let newVal = startVal + delta;
+      if (newVal < -360) newVal = -360;
+      if (newVal > 360) newVal = 360;
+      onChange(Math.round(newVal));
+    };
+
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
+  return (
+    <div 
+      onMouseDown={handleDrag}
+      style={{
+        width: '16px', height: '16px', borderRadius: '50%', border: '1px solid var(--border)', 
+        background: 'var(--bg-card)', position: 'relative', cursor: 'ns-resize', flexShrink: 0
+      }}
+    >
+      <div style={{
+        position: 'absolute', top: '50%', left: '50%', width: '50%', height: '1.5px', 
+        background: 'var(--accent)', transformOrigin: '0% 50%',
+        transform: `translate(0%, -50%) rotate(${value - 90}deg)`
+      }} />
+    </div>
+  );
+}
+
+function EffectControls({ clip, onChange, playheadUnits, onToggleKeyframing, onJumpToKeyframe }: { 
+  clip: Clip | undefined, 
+  onChange: (id: number, changes: Partial<Clip>) => void,
+  playheadUnits: number,
+  onToggleKeyframing: (id: number, prop: string) => void,
+  onJumpToKeyframe: (id: number, prop: string, dir: 'prev'|'next') => void
+}) {
+  if (!clip) return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', textAlign: 'center' }}>
       <div>
-        <div style={{fontSize:'28px',marginBottom:'10px',opacity:0.15}}>🎛</div>
-        <div style={{fontSize:'11px',color:'var(--text-secondary)',lineHeight:1.6}}>Select a clip in the timeline<br/>to view its effect controls</div>
+        <div style={{ fontSize: '28px', marginBottom: '10px', opacity: 0.15 }}>🎛</div>
+        <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>Select a clip in the timeline<br/>to view its effect controls</div>
       </div>
     </div>
   );
 
+  const cv = (prop: string) => getClipValue(clip, prop, playheadUnits);
+  const isKfing = (prop: string) => !!(clip.keyframes?.[prop]);
+  const hasKfAtPlayhead = (prop: string) => {
+    const kfs = clip.keyframes?.[prop];
+    if (!kfs) return false;
+    const relTime = playheadUnits - clip.start;
+    return kfs.some(k => Math.abs(k.time - relTime) < 0.1);
+  };
+
+  const updateProp = (key: keyof Clip, val: number) => {
+    onChange(clip.id, { [key]: val });
+  };
+
+  const PropRow = ({ label, prop, min, max, step, unit, dial }: { label: string, prop: string, min?: number, max?: number, step?: number, unit?: string, dial?: boolean }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '5px' }}>
+      <div style={{ width: '75px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '3px' }}>
+        <button 
+          onClick={() => onToggleKeyframing(clip.id, prop)}
+          title="Enable keyframing" 
+          style={{ 
+            width: '14px', height: '14px', borderRadius: '50%', border: '1px solid var(--border)', 
+            background: isKfing(prop) ? 'var(--accent)' : 'var(--bg-secondary)', 
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', 
+            flexShrink: 0, fontSize: '8px', color: isKfing(prop) ? 'white' : 'var(--text-muted)', padding: 0 
+          }}
+        >⏱</button>
+        <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontFamily: 'Syne,sans-serif' }}>{label}</span>
+      </div>
+      {dial && <RotationDial value={cv(prop)} onChange={v => updateProp(prop as any, v)} />}
+      <div style={{ flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '4px', padding: '3px 6px', display: 'flex', alignItems: 'center' }}>
+        <NumberScrubber value={cv(prop)} onChange={v => updateProp(prop as any, v)} min={min} max={max} step={step} unit={unit} />
+      </div>
+      {isKfing(prop) && (
+        <div style={{ display: 'flex', gap: '1px', flexShrink: 0 }}>
+          <button onClick={() => onJumpToKeyframe(clip.id, prop, 'prev')} style={{ width: '12px', height: '20px', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '8px', padding: 0 }}>◀</button>
+          <button style={{ width: '12px', height: '20px', background: hasKfAtPlayhead(prop) ? 'var(--accent-glow)' : 'transparent', border: `1px solid ${hasKfAtPlayhead(prop) ? 'var(--accent)' : 'var(--border)'}`, borderRadius: '2px', color: hasKfAtPlayhead(prop) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', fontSize: '7px', padding: 0 }}>◆</button>
+          <button onClick={() => onJumpToKeyframe(clip.id, prop, 'next')} style={{ width: '12px', height: '20px', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '8px', padding: 0 }}>▶</button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <div style={{flex:1,overflowY:'auto',padding:'12px'}}>
+    <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
       {/* Clip identity */}
-      <div style={{padding:'8px 10px',borderRadius:'7px',background:`${clip.color}12`,border:`1px solid ${clip.color}30`,marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
-        <div style={{width:'8px',height:'8px',borderRadius:'50%',background:clip.color,flexShrink:0}}/>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:'11px',fontWeight:700,fontFamily:'Syne,sans-serif',color:clip.color,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{clip.label}</div>
-          <div style={{fontSize:'9px',color:'var(--text-secondary)'}}>{clip.type} · Track {clip.trackId}</div>
+      <div style={{ padding: '8px 10px', borderRadius: '7px', background: `${clip.color}12`, border: `1px solid ${clip.color}30`, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: clip.color, flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, fontFamily: 'Syne,sans-serif', color: clip.color, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{clip.label}</div>
+          <div style={{ fontSize: '9px', color: 'var(--text-secondary)' }}>{clip.type} · Track {clip.trackId}</div>
         </div>
       </div>
 
       {/* MOTION section */}
-      <div style={{marginBottom:'10px'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',marginBottom:'6px'}}>
-          <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>▶ Motion</span>
-          <div style={{display:'flex',gap:'4px'}}>
-            <button title="Reset" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'11px'}}>↺</button>
-            <button title="Toggle" style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>👁</button>
+      <div style={{ marginBottom: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', marginBottom: '6px' }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-primary)', fontFamily: 'Syne,sans-serif', fontWeight: 700 }}>▶ Motion</span>
+          <div style={{ display: 'flex', gap: '4px' }}>
+            <button onClick={() => onChange(clip.id, { x: 0, y: 0, scale: 100, rotation: 0, anchorX: 960, anchorY: 540, keyframes: undefined })} title="Reset" style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '11px' }}>↺</button>
+            <button title="Toggle" style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '11px' }}>👁</button>
           </div>
         </div>
-        {props.map((p,i)=>(
-          <div key={i} style={{display:'flex',alignItems:'center',gap:'4px',marginBottom:'5px'}}>
-            <div style={{width:'70px',flexShrink:0,display:'flex',alignItems:'center',gap:'3px'}}>
-              {/* Stopwatch (keyframe) icon */}
-              <button title="Enable keyframing" style={{width:'14px',height:'14px',borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg-secondary)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:'8px',color:'var(--text-muted)',padding:0}}>⏱</button>
-              <span style={{fontSize:'10px',color:'var(--text-secondary)',fontFamily:'Syne,sans-serif'}}>{p.label||''}{p.sub?` ${p.sub}`:''}</span>
-            </div>
-            <div style={{flex:1,background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:'4px',padding:'3px 6px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'ew-resize'}}>
-              <span style={{fontSize:'10px',fontFamily:'monospace',color:'var(--text-primary)'}}>{p.val}</span>
-              <span style={{fontSize:'9px',color:'var(--text-secondary)'}}>{p.unit}</span>
-            </div>
-            {/* Keyframe nav buttons */}
-            <div style={{display:'flex',gap:'1px',flexShrink:0}}>
-              <button style={{width:'12px',height:'20px',background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'8px',padding:0}}>◀</button>
-              <button style={{width:'12px',height:'20px',background:p.label?`${p.color}40`:'transparent',border:p.label?`1px solid ${p.color}60`:'none',borderRadius:'2px',color:p.label?p.color:'var(--text-muted)',cursor:'pointer',fontSize:'7px',padding:0}}>◆</button>
-              <button style={{width:'12px',height:'20px',background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:'8px',padding:0}}>▶</button>
-            </div>
-          </div>
-        ))}
+
+        <PropRow label="Position X" prop="x" />
+        <PropRow label="Position Y" prop="y" />
+        <PropRow label="Scale" prop="scale" min={0} max={500} unit="%" />
+        <PropRow label="Rotation" prop="rotation" min={-360} max={360} unit="°" dial />
+        <PropRow label="Anchor X" prop="anchorX" />
+        <PropRow label="Anchor Y" prop="anchorY" />
       </div>
 
       {/* OPACITY */}
-      <div style={{marginBottom:'10px'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',marginBottom:'6px'}}>
-          <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>▶ Opacity</span>
-          <button style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>👁</button>
+      <div style={{ marginBottom: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', marginBottom: '6px' }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-primary)', fontFamily: 'Syne,sans-serif', fontWeight: 700 }}>▶ Opacity</span>
+          <button style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '11px' }}>👁</button>
         </div>
-        <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
-          <button title="Enable keyframing" style={{width:'14px',height:'14px',borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg-secondary)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:'8px',color:'var(--text-muted)',padding:0}}>⏱</button>
-          <input type="range" min={0} max={100} defaultValue={100} style={{flex:1,accentColor:'var(--text-primary)',height:'3px'}}/>
-          <span style={{fontSize:'10px',fontFamily:'monospace',color:'var(--text-primary)',width:'28px',textAlign:'right'}}>100%</span>
-        </div>
+        <PropRow label="Opacity" prop="opacity" min={0} max={100} unit="%" />
       </div>
 
       {/* TIME REMAPPING */}
-      <div style={{marginBottom:'10px'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',marginBottom:'6px'}}>
-          <span style={{fontSize:'10px',color:'var(--text-primary)',fontFamily:'Syne,sans-serif',fontWeight:700}}>▶ Time Remapping</span>
-          <button style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px'}}>👁</button>
+      <div style={{ marginBottom: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', marginBottom: '6px' }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-primary)', fontFamily: 'Syne,sans-serif', fontWeight: 700 }}>▶ Time Remapping</span>
+          <button style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '11px' }}>👁</button>
         </div>
-        <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
-          <button style={{width:'14px',height:'14px',borderRadius:'50%',border:'1px solid var(--border)',background:'var(--bg-secondary)',cursor:'pointer',fontSize:'8px',color:'var(--text-muted)',padding:0,display:'flex',alignItems:'center',justifyContent:'center'}}>⏱</button>
-          <span style={{fontSize:'10px',color:'var(--text-secondary)'}}>Speed</span>
-          <div style={{flex:1,background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:'4px',padding:'3px 6px',display:'flex',justifyContent:'space-between',cursor:'ew-resize'}}>
-            <span style={{fontSize:'10px',fontFamily:'monospace',color:clip.speed?'#FFD60A':'var(--text-primary)'}}>{clip.speed||100}%</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <button style={{ width: '14px', height: '14px', borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--bg-secondary)', cursor: 'pointer', fontSize: '8px', color: 'var(--text-muted)', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>⏱</button>
+          <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Speed</span>
+          <div style={{ flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '4px', padding: '3px 6px', display: 'flex', justifyContent: 'space-between', cursor: 'ew-resize' }}>
+            <span style={{ fontSize: '10px', fontFamily: 'monospace', color: clip.speed ? '#FFD60A' : 'var(--text-primary)' }}>{clip.speed || 100}%</span>
           </div>
         </div>
       </div>
@@ -1124,6 +1274,7 @@ export default function EditorPage() {
   const [playheadPos,setPlayheadPos]   = useState(38);
   const [zoom,setZoom]                 = useState(1);
   const [selectedClipIds, setSelectedClipIds] = useState<number[]>([]);
+  const [selectedKeyframe, setSelectedKeyframe] = useState<{ clipId: number, prop: string, kfId: number } | null>(null);
   const [marqueeSelection, setMarqueeSelection] = useState<{ startX: number; startY: number; currentX: number; currentY: number; isActive: boolean } | null>(null);
   const [timecode,setTimecode]         = useState('00:00:38;14');
   const [showExport,setShowExport]     = useState(false);
@@ -1160,8 +1311,8 @@ export default function EditorPage() {
   // Ref to store drag item data — bypasses React stale closure in drag event handlers
   const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
 
-  const stateRef = useRef<{clips:Clip[], selectedClipIds:number[]}>({ clips, selectedClipIds });
-  useEffect(() => { stateRef.current = { clips, selectedClipIds }; }, [clips, selectedClipIds]);
+  const stateRef = useRef<{clips:Clip[], selectedClipIds:number[], selectedKeyframe: { clipId: number, prop: string, kfId: number } | null}>({ clips, selectedClipIds, selectedKeyframe });
+  useEffect(() => { stateRef.current = { clips, selectedClipIds, selectedKeyframe }; }, [clips, selectedClipIds, selectedKeyframe]);
 
   // Ref for clip history (for undo during drag operations)
   const historyRef = useRef<Clip[][]>([]);
@@ -1184,6 +1335,7 @@ export default function EditorPage() {
       if(e.target instanceof HTMLInputElement||e.target instanceof HTMLTextAreaElement||e.target instanceof HTMLSelectElement) return;
       if(!e.ctrlKey&&!e.metaKey){
         if(e.key==='v'||e.key==='V'){ setActiveTool('select'); setRazorLinePos(null); }
+        if(e.key==='a'||e.key==='A'){ setActiveTool('track_fwd'); setRazorLinePos(null); }
         if(e.key==='c'||e.key==='C'){ setActiveTool('razor'); }
         if(e.key==='b'||e.key==='B'){ setActiveTool('ripple'); setRazorLinePos(null); }
         if(e.key==='s'||e.key==='S'){ setSnappingEnabled(p=>!p); notify(snappingEnabled?'🧲 Snapping Off':'🧲 Snapping On'); }
@@ -1194,8 +1346,20 @@ export default function EditorPage() {
            setIsPlaying(p=>!p);
         }
         if(e.key==='Delete'||e.key==='Backspace') {
-           const { clips: curClips, selectedClipIds: curSels } = stateRef.current;
-           if (curSels.length > 0) {
+           const { clips: curClips, selectedClipIds: curSels, selectedKeyframe: curKf } = stateRef.current;
+           if (curKf) {
+              e.preventDefault();
+              const nextClips = curClips.map(c => {
+                if (c.id !== curKf.clipId || !c.keyframes?.[curKf.prop]) return c;
+                const nextKfs = { ...c.keyframes };
+                nextKfs[curKf.prop] = nextKfs[curKf.prop].filter(k => k.id !== curKf.kfId);
+                if (nextKfs[curKf.prop].length === 0) delete nextKfs[curKf.prop];
+                return { ...c, keyframes: Object.keys(nextKfs).length > 0 ? nextKfs : undefined };
+              });
+              applyAction(`Delete keyframe`, nextClips);
+              setSelectedKeyframe(null);
+              notify('Keyframe deleted');
+           } else if (curSels.length > 0) {
               e.preventDefault();
               const newClips = curClips.filter(c => !curSels.includes(c.id));
               applyAction(`Delete ${curSels.length} clip(s)`, newClips);
@@ -1403,11 +1567,13 @@ export default function EditorPage() {
     setPlayheadPos(pct);
     if(activeTool==='select') {
       setSelectedClipIds([]);
+      setSelectedKeyframe(null);
     }
   };
 
   const handleTracksMouseDown = (e: React.MouseEvent) => {
     if (activeTool !== 'select' || e.button !== 0) return;
+    setSelectedKeyframe(null);
     
     // Start marquee selection if clicking on tracks background
     const r = tracksAreaRef.current?.getBoundingClientRect();
@@ -1983,10 +2149,16 @@ export default function EditorPage() {
                    const activeVidClip = clips.filter(c => c.type === 'video' && c.url && playheadUnits >= c.start && playheadUnits < c.start + c.width)
                       .sort((a,b) => b.trackId - a.trackId)[0];
                    if (activeVidClip) {
+                      const cv = (prop: string) => getClipValue(activeVidClip, prop, playheadUnits);
                       return (
                          <video 
                             src={activeVidClip.url}
-                            style={{width:'100%', height:'100%', objectFit:'contain', position:'relative', zIndex:2}}
+                            style={{
+                              width:'100%', height:'100%', objectFit:'contain', position:'relative', zIndex:2,
+                              transform: `translate(${cv('x')}px, ${cv('y')}px) scale(${cv('scale') / 100}) rotate(${cv('rotation')}deg)`,
+                              transformOrigin: `${activeVidClip.anchorX ?? 960}px ${activeVidClip.anchorY ?? 540}px`,
+                              opacity: cv('opacity') / 100
+                            }}
                             muted
                             ref={(el) => {
                                if (el) {
@@ -2236,21 +2408,30 @@ export default function EditorPage() {
                         return (
                         <div key={clip.id}
                           onMouseDown={e=>{
-                            if(activeTool==='select'&&e.button===0){
+                            if((activeTool==='select'||activeTool==='track_fwd')&&e.button===0){
                               e.stopPropagation();
                               dragMovedRef.current=false;
                               
-                              let newSelections = [...selectedClipIds];
-                              if (e.shiftKey || e.ctrlKey || e.metaKey) {
-                                if (isSelected) {
-                                  newSelections = newSelections.filter(id => id !== clip.id);
-                                } else {
-                                  newSelections.push(clip.id);
-                                }
+                              let newSelections: number[] = [];
+                              
+                              if (activeTool === 'track_fwd') {
+                                 const selectAllTracks = e.shiftKey;
+                                 newSelections = clips
+                                    .filter(c => (selectAllTracks || c.trackId === clip.trackId) && c.start >= clip.start)
+                                    .map(c => c.id);
                               } else {
-                                if (!isSelected) {
-                                  newSelections = [clip.id];
-                                }
+                                 newSelections = [...selectedClipIds];
+                                 if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                                   if (isSelected) {
+                                     newSelections = newSelections.filter(id => id !== clip.id);
+                                   } else {
+                                     newSelections.push(clip.id);
+                                   }
+                                 } else {
+                                   if (!isSelected) {
+                                     newSelections = [clip.id];
+                                   }
+                                 }
                               }
                               setSelectedClipIds(newSelections);
 
@@ -2295,8 +2476,53 @@ export default function EditorPage() {
                           </div>
                           {/* Waveform body */}
                           {track.type!=='caption' && (
-                            <div style={{flex:1,overflow:'hidden'}}>
+                            <div style={{flex:1,overflow:'hidden',position:'relative'}}>
                               <ClipWave color={clip.color} n={Math.floor(clip.width*zoom*0.25)}/>
+                              
+                              {/* Keyframes rendering */}
+                              {clip.keyframes && Object.entries(clip.keyframes).map(([prop, kfs]) => (
+                                <div key={prop} style={{position:'absolute',inset:0,pointerEvents:'none'}}>
+                                  {kfs.map(kf => {
+                                    const isSelected = selectedKeyframe?.clipId === clip.id && selectedKeyframe?.prop === prop && selectedKeyframe?.kfId === kf.id;
+                                    return (
+                                      <div 
+                                        key={kf.id}
+                                        onMouseDown={e => {
+                                          e.stopPropagation();
+                                          setSelectedKeyframe({ clipId: clip.id, prop, kfId: kf.id });
+                                        }}
+                                        onContextMenu={e => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          setSelectedKeyframe({ clipId: clip.id, prop, kfId: kf.id });
+                                          const nextInterpolation = kf.interpolation === 'linear' ? 'ease-in' : kf.interpolation === 'ease-in' ? 'ease-out' : 'linear';
+                                          setClips(prev => prev.map(c => {
+                                            if (c.id !== clip.id || !c.keyframes?.[prop]) return c;
+                                            const nextKfs = { ...c.keyframes };
+                                            nextKfs[prop] = nextKfs[prop].map(k => k.id === kf.id ? { ...k, interpolation: nextInterpolation } : k);
+                                            return { ...c, keyframes: nextKfs };
+                                          }));
+                                          notify(`Interpolation: ${nextInterpolation}`);
+                                        }}
+                                        style={{
+                                          position:'absolute',
+                                          left:`${kf.time * zoom * 0.14 / clip.width * 100}%`,
+                                          top:'50%',
+                                          width:'8px', height:'8px',
+                                          background: isSelected ? 'var(--yellow)' : 'white',
+                                          border: '1px solid rgba(0,0,0,0.5)',
+                                          transform: 'translate(-50%, -50%) rotate(45deg)',
+                                          cursor: 'pointer',
+                                          pointerEvents: 'auto',
+                                          zIndex: 30,
+                                          boxShadow: isSelected ? '0 0 8px var(--yellow)' : 'none'
+                                        }}
+                                        title={`${prop}: ${kf.value} (${kf.interpolation})`}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                              ))}
                             </div>
                           )}
                           {/* Transition zone indicator at edges */}
@@ -2448,7 +2674,68 @@ export default function EditorPage() {
             ))}
           </div>
 
-          {rightTab==='effectcontrols' && <EffectControls clip={selectedClipObj}/>}
+          {rightTab==='effectcontrols' && (
+            <EffectControls 
+              clip={selectedClipObj} 
+              playheadUnits={playheadPos / (zoom * 0.14)}
+              onChange={(id, changes) => setClips(prev => prev.map(c => {
+                if (c.id !== id) return c;
+                const playheadUnits = playheadPos / (zoom * 0.14);
+                const relTime = playheadUnits - c.start;
+                
+                let nextChanges = { ...changes };
+                
+                // Auto-keyframing logic
+                if (c.keyframes) {
+                  const updatedKfs = { ...c.keyframes };
+                  Object.keys(changes).forEach(prop => {
+                    if (updatedKfs[prop]) {
+                      const existingIdx = updatedKfs[prop].findIndex(k => Math.abs(k.time - relTime) < 0.1);
+                      const newVal = (changes as any)[prop];
+                      if (existingIdx !== -1) {
+                        updatedKfs[prop][existingIdx] = { ...updatedKfs[prop][existingIdx], value: newVal };
+                      } else {
+                        updatedKfs[prop] = [...updatedKfs[prop], { id: Date.now(), time: relTime, value: newVal, interpolation: 'linear' }].sort((a,b) => a.time - b.time);
+                      }
+                      // remove from top-level changes so we don't update static val if keyframed
+                      delete (nextChanges as any)[prop];
+                    }
+                  });
+                  nextChanges = { ...nextChanges, keyframes: updatedKfs } as any;
+                }
+                
+                return { ...c, ...nextChanges };
+              }))} 
+              onToggleKeyframing={(id, prop) => setClips(prev => prev.map(c => {
+                if (c.id !== id) return c;
+                const kfs = c.keyframes || {};
+                if (kfs[prop]) {
+                  const nextKfs = { ...kfs };
+                  delete nextKfs[prop];
+                  return { ...c, keyframes: Object.keys(nextKfs).length > 0 ? nextKfs : undefined };
+                } else {
+                  const playheadUnits = playheadPos / (zoom * 0.14);
+                  const relTime = playheadUnits - c.start;
+                  const currentVal = getClipValue(c, prop, playheadUnits);
+                  return { ...c, keyframes: { ...kfs, [prop]: [{ id: Date.now(), time: relTime, value: currentVal, interpolation: 'linear' }] } };
+                }
+              }))}
+              onJumpToKeyframe={(id, prop, dir) => {
+                const clip = clips.find(c => c.id === id);
+                if (!clip || !clip.keyframes?.[prop]) return;
+                const playheadUnits = playheadPos / (zoom * 0.14);
+                const relTime = playheadUnits - clip.start;
+                const sorted = [...clip.keyframes[prop]].sort((a,b) => a.time - b.time);
+                let target: Keyframe | undefined;
+                if (dir === 'prev') {
+                  target = [...sorted].reverse().find(k => k.time < relTime - 0.1);
+                } else {
+                  target = sorted.find(k => k.time > relTime + 0.1);
+                }
+                if (target) setPlayheadPos((clip.start + target.time) * (zoom * 0.14));
+              }}
+            />
+          )}
 
           {rightTab==='info' && (
             <div style={{flex:1,padding:'12px',overflowY:'auto'}}>
