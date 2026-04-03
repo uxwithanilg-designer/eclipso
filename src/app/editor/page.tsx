@@ -200,9 +200,11 @@ function initMarkers(): Marker[] {
 //  MINI WAVEFORM
 // ═══════════════════════════════════════════════════
 function ClipWave({color, n=30}:{color:string; n?:number}) {
+  // Cap bars to avoid excessive DOM nodes (major perf issue at high zoom / long clips)
+  const bars = Math.min(n, 60);
   return (
     <div style={{display:'flex',alignItems:'center',gap:'1px',height:'100%',overflow:'hidden',padding:'3px 0'}}>
-      {Array.from({length:n},(_,i)=>(
+      {Array.from({length:bars},(_,i)=>(
         <div key={i} style={{width:'2px',flexShrink:0,height:`${CLIP_WAVE[i%CLIP_WAVE.length]}%`,background:color,opacity:0.6,borderRadius:'1px'}}/>
       ))}
     </div>
@@ -1359,6 +1361,8 @@ export default function EditorPage() {
   const dragMovedRef    = useRef(false);
   // Ref to store drag item data — bypasses React stale closure in drag event handlers
   const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number, sourceWidth?:number}|null>(null);
+  // rAF throttle ref for mousemove — caps state updates to one per animation frame
+  const mouseMoveRafRef = useRef<number | undefined>(undefined);
 
   const stateRef = useRef<{clips:Clip[], selectedClipIds:number[], selectedKeyframe: { clipId: number, prop: string, kfId: number } | null}>({ clips, selectedClipIds, selectedKeyframe });
   useEffect(() => { stateRef.current = { clips, selectedClipIds, selectedKeyframe }; }, [clips, selectedClipIds, selectedKeyframe]);
@@ -1454,24 +1458,35 @@ export default function EditorPage() {
   },[]);
 
   // Timeline Playback loop
+  // Uses a local ref so the rAF runs at 60fps for smooth timing,
+  // but React state (and full re-renders) only update at ~15fps.
+  const playheadUnitsRef = useRef(playheadPos / (zoom * 0.14));
   useEffect(() => {
     let req: number;
     let lastTime = performance.now();
+    let frameCount = 0;
     const loop = (time: number) => {
       const dt = time - lastTime;
       lastTime = time;
-      if (dt > 0) {
-         setPlayheadPos(p => {
-             const playheadUnits = p / (zoom * 0.14);
-             const newUnits = playheadUnits + ((dt / 1000) * 15);
-             let pct = newUnits * (zoom * 0.14);
-             if (pct > 100) pct = 0; // loop back
-             return pct;
-         });
+      // Ignore huge dt (e.g. tab was hidden) to prevent jumps
+      if (dt > 0 && dt < 500) {
+        playheadUnitsRef.current = playheadUnitsRef.current + (dt / 1000) * 15;
+        const pct = playheadUnitsRef.current * (zoom * 0.14);
+        if (pct > 100) {
+          playheadUnitsRef.current = 0;
+        }
+        // Only update React state every 4 frames (~15fps) to avoid
+        // 60fps full re-renders that cause stutter and lag
+        frameCount++;
+        if (frameCount % 4 === 0) {
+          setPlayheadPos(playheadUnitsRef.current * (zoom * 0.14) > 100 ? 0 : playheadUnitsRef.current * (zoom * 0.14));
+        }
       }
       req = requestAnimationFrame(loop);
     };
     if (isPlaying) {
+      // Sync ref to current state when playback starts
+      playheadUnitsRef.current = playheadPos / (zoom * 0.14);
       req = requestAnimationFrame(loop);
     }
     return () => cancelAnimationFrame(req);
@@ -1904,6 +1919,10 @@ export default function EditorPage() {
 
   // ── RAZOR line + MOVE/CROSS-TRACK drag + EDGE TRIMMING ──
   const handleTracksMouseMove=(e:React.MouseEvent<HTMLDivElement>)=>{
+    // rAF throttle: skip duplicate events within the same animation frame.
+    // High-frequency mice can fire 1000+ events/sec — this caps at ~60fps.
+    if (mouseMoveRafRef.current !== undefined) return;
+    mouseMoveRafRef.current = requestAnimationFrame(() => { mouseMoveRafRef.current = undefined; });
     // -- MARQUEE SELECTION --
     if (marqueeSelection) {
       const r = tracksAreaRef.current?.getBoundingClientRect();
@@ -2199,10 +2218,9 @@ export default function EditorPage() {
                 }}
               >
                 {sourceClip?.url ? (
-                   <video 
-                      src={sourceClip.url} 
+                   <video
+                      src={sourceClip.url}
                       style={{width:'100%',height:'100%',objectFit:'contain',position:'relative',zIndex:2,cursor:'grab'}}
-                      muted
                       draggable
                       onDragStart={(e) => {
                          const offset = Math.min(sourceInPct, sourceOutPct) / 100 * sourceClip.duration;
@@ -2326,6 +2344,15 @@ export default function EditorPage() {
                          const timeA = (playheadUnits - clipA.start + (clipA.sourceOffset||0))/15;
                          const timeB = (playheadUnits - clipB.start + (clipB.sourceOffset||0))/15;
 
+                         // Helper: sync video element to target time, avoiding constant seeks during playback
+                         const syncTrVideo = (el: HTMLVideoElement | null, targetTime: number) => {
+                            if (!el) return;
+                            const threshold = isPlaying ? 0.5 : 0.05;
+                            if (Math.abs(el.currentTime - targetTime) > threshold) el.currentTime = targetTime;
+                            if (isPlaying && el.paused) el.play().catch(()=>{});
+                            else if (!isPlaying && !el.paused) el.pause();
+                         };
+
                          if (activeTr.type.includes('Dissolve')) {
                             return (
                                <div style={{width:'100%', height:'100%', position:'relative'}}>
@@ -2333,12 +2360,12 @@ export default function EditorPage() {
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
                                      opacity: (cvA!('opacity') / 100) * (1 - progress), zIndex: 2
-                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeA)} />
                                   <video src={clipB.url} muted style={{
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
                                      opacity: (cvB!('opacity') / 100) * progress, zIndex: 3
-                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeB)} />
                                </div>
                             );
                          } else if (activeTr.type === 'Dip to Black' || activeTr.type === 'Dip to White') {
@@ -2351,12 +2378,12 @@ export default function EditorPage() {
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
                                      opacity: (cvA!('opacity') / 100) * linearOpA, zIndex: 2
-                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeA)} />
                                   <video src={clipB.url} muted style={{
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
                                      opacity: (cvB!('opacity') / 100) * linearOpB, zIndex: 3
-                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeB)} />
                                </div>
                             );
                          } else if (activeTr.type.startsWith('Wipe')) {
@@ -2371,12 +2398,12 @@ export default function EditorPage() {
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
                                      opacity: cvA!('opacity') / 100, zIndex: 2
-                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeA)} />
                                   <video src={clipB.url} muted style={{
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
                                      opacity: cvB!('opacity') / 100, zIndex: 3, clipPath: clipPath, WebkitClipPath: clipPath
-                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeB)} />
                                </div>
                             );
                          } else if (activeTr.type.startsWith('Slide')) {
@@ -2390,12 +2417,12 @@ export default function EditorPage() {
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
                                      opacity: cvA!('opacity') / 100, zIndex: 2
-                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeA)} />
                                   <video src={clipB.url} muted style={{
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg) ${transformB}`,
                                      opacity: cvB!('opacity') / 100, zIndex: 3,
-                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  }} ref={el => syncTrVideo(el, timeB)} />
                                </div>
                             );
                          }
@@ -2419,17 +2446,31 @@ export default function EditorPage() {
                                   transformOrigin: `${activeVidClip.anchorX ?? 960}px ${activeVidClip.anchorY ?? 540}px`,
                                   opacity: cv('opacity') / 100
                                 }}
-                                muted={(tracks.find(t=>t.id===activeVidClip.trackId)?.muted || false) || !isPlaying}
+                                muted={
+                                  // Mute the visible video if a linked audio clip exists on A1/A2
+                                  // (that hidden video element handles audio — prevents double audio).
+                                  // Only play audio from the visible element if there is no linked audio clip.
+                                  (activeVidClip.groupId != null && clips.some(c =>
+                                    c.groupId === activeVidClip.groupId &&
+                                    c.type === 'audio' &&
+                                    c.id !== activeVidClip.id
+                                  )) ||
+                                  (tracks.find(t => t.id === activeVidClip.trackId)?.muted || false) ||
+                                  !isPlaying
+                                }
                                 ref={(el) => {
                                    if (el) {
                                       const localTime = (playheadUnits - activeVidClip.start) + (activeVidClip.sourceOffset || 0);
                                       const expectedSeconds = localTime / 15;
-                                      
-                                      // Crucial: always sync if jumping or starting playback
-                                      if (Math.abs(el.currentTime - expectedSeconds) > 0.05) {
+
+                                      // During playback, only seek if drift is large (>0.5s) to avoid
+                                      // constant seeks that interrupt audio and cause stutter.
+                                      // When paused, use tight threshold for accurate scrubbing.
+                                      const syncThreshold = isPlaying ? 0.5 : 0.05;
+                                      if (Math.abs(el.currentTime - expectedSeconds) > syncThreshold) {
                                          el.currentTime = expectedSeconds;
                                       }
-                                      
+
                                       if (isPlaying && el.paused) {
                                          let p = el.play();
                                          if (p !== undefined) p.catch(()=>{});
@@ -2453,7 +2494,10 @@ export default function EditorPage() {
                                    if (el) {
                                       const localTime = (playheadUnits - ac.start) + (ac.sourceOffset || 0);
                                       const expectedSeconds = localTime / 15;
-                                      if (Math.abs(el.currentTime - expectedSeconds) > 0.1 && !isPlaying) {
+                                      // Sync to playhead: tight when paused (scrubbing),
+                                      // only correct large drift during playback (avoid seek stutters)
+                                      const audioSyncThreshold = isPlaying ? 0.4 : 0.1;
+                                      if (Math.abs(el.currentTime - expectedSeconds) > audioSyncThreshold) {
                                          el.currentTime = expectedSeconds;
                                       }
                                       if (isPlaying && el.paused) el.play().catch(()=>{});
@@ -2571,7 +2615,14 @@ export default function EditorPage() {
               <div style={{flex:1,overflowX:'auto',overflowY:'hidden',position:'relative'}}>
                 {/* Ruler */}
                 <div ref={tlRef} onClick={handleTLClick} style={{height:'30px',background:'var(--bg-tertiary)',borderBottom:'1px solid var(--border)',position:'sticky',top:0,zIndex:5,cursor:'crosshair',flexShrink:0,overflow:'hidden'}}>
-                  <div style={{minWidth:'700px',width:'100%',height:'100%',position:'relative'}}>
+                  <div style={{
+                    minWidth:'700px',width:'100%',height:'100%',position:'relative',
+                    // Fine tick marks via CSS — replaces 100 DOM elements
+                    backgroundImage: `repeating-linear-gradient(to right, transparent, transparent calc(${zoom}% - 1px), rgba(255,255,255,0.06) calc(${zoom}% - 1px), rgba(255,255,255,0.06) ${zoom}%)`,
+                    backgroundSize: '100% 4px',
+                    backgroundPositionY: '4px',
+                    backgroundRepeat: 'repeat-x',
+                  }}>
                     {Array.from({length:25},(_,i)=>(
                       <div key={i} style={{position:'absolute',left:`${i*4*zoom}%`,display:'flex',flexDirection:'column',alignItems:'flex-start',top:'6px'}}>
                         <div style={{width:'1px',height:'8px',background:'var(--border-bright)'}}/>
@@ -2579,10 +2630,6 @@ export default function EditorPage() {
                           {String(Math.floor(i*4/60)).padStart(2,'0')}:{String((i*4)%60).padStart(2,'0')}
                         </span>
                       </div>
-                    ))}
-                    {/* Tick marks */}
-                    {Array.from({length:100},(_,i)=>(
-                      <div key={i} style={{position:'absolute',left:`${i*zoom}%`,top:'4px',width:'1px',height:'4px',background:'rgba(255,255,255,0.06)'}}/>
                     ))}
                     {/* Markers on ruler */}
                     {markers.map(m=>(
@@ -2604,28 +2651,32 @@ export default function EditorPage() {
                     <div key={track.id} style={{
                       height:`${track.height}px`,
                       borderBottom:'1px solid var(--border)',
-                      background:
+                      // Grid lines via CSS gradient — replaces 125 DOM div elements per track (major perf win)
+                      backgroundImage: [
                         dragOverTrackId===track.id&&(dragState||dragNewState)
-                          ? track.type==='video'?'rgba(124,92,255,0.09)'
-                            :track.type==='audio'?'rgba(0,229,255,0.09)'
-                            :'rgba(255,214,10,0.04)'
-                          : track.type==='video'?'rgba(124,92,255,0.015)'
-                            :track.type==='caption'?'rgba(255,214,10,0.015)'
-                            :'rgba(0,229,255,0.015)',
+                          ? track.type==='video'
+                            ? 'linear-gradient(rgba(124,92,255,0.09),rgba(124,92,255,0.09))'
+                            : track.type==='audio'
+                              ? 'linear-gradient(rgba(0,229,255,0.09),rgba(0,229,255,0.09))'
+                              : 'linear-gradient(rgba(255,214,10,0.04),rgba(255,214,10,0.04))'
+                          : track.type==='video'
+                            ? 'linear-gradient(rgba(124,92,255,0.015),rgba(124,92,255,0.015))'
+                            : track.type==='caption'
+                              ? 'linear-gradient(rgba(255,214,10,0.015),rgba(255,214,10,0.015))'
+                              : 'linear-gradient(rgba(0,229,255,0.015),rgba(0,229,255,0.015))',
+                        // Coarse beat lines every 4×zoom%
+                        `repeating-linear-gradient(to right, transparent, transparent calc(${4*zoom}% - 1px), rgba(255,255,255,0.04) calc(${4*zoom}% - 1px), rgba(255,255,255,0.04) ${4*zoom}%)`,
+                        // Fine grid lines every zoom%
+                        `repeating-linear-gradient(to right, transparent, transparent calc(${zoom}% - 1px), rgba(255,255,255,0.015) calc(${zoom}% - 1px), rgba(255,255,255,0.015) ${zoom}%)`,
+                      ].join(','),
                       outline: dragOverTrackId===track.id&&(dragState||dragNewState)
                         ? `2px solid ${track.type==='video'?'rgba(124,92,255,0.45)':'rgba(0,229,255,0.45)'}` : 'none',
                       position:'relative',
                       cursor:activeTool==='razor'?'crosshair':dragState?'grabbing':'pointer',
                       flexShrink:0,
-                      transition:'background 0.15s, outline 0.15s',
+                      // Isolate track layout so clip position changes don't cascade to parent
+                      contain: 'layout style',
                     }}>
-                      {/* Beat grid */}
-                      {Array.from({length:100},(_,i)=>(
-                        <div key={i} style={{position:'absolute',left:`${i*zoom}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.015)'}}/>
-                      ))}
-                      {Array.from({length:25},(_,i)=>(
-                        <div key={i} style={{position:'absolute',left:`${i*4*zoom}%`,top:0,bottom:0,width:'1px',background:'rgba(255,255,255,0.04)'}}/>
-                      ))}
 
                       {/* GAPs rendering for Ripple Delete */}
                       {(() => {
@@ -2847,8 +2898,10 @@ export default function EditorPage() {
                           overflow:'hidden',
                           cursor:dragState?.clipId===clip.id?'grabbing':activeTool==='select'?'grab':activeTool==='razor'?'crosshair':'pointer',
                           boxShadow:isSelected?`0 0 0 1.5px ${clip.color}, inset 0 0 0 1px ${clip.color}40`:'none',
-                          transition:'border-color 0.1s',
                           display:'flex', flexDirection:'column',
+                          // GPU-accelerate clip layers during drag for smooth repositioning
+                          willChange: dragState ? 'transform' : 'auto',
+                          contain: 'layout style',
                         }}>
                           {/* Clip header */}
                           <div style={{display:'flex',alignItems:'center',gap:'3px',padding:'2px 4px',flexShrink:0,background:`${clip.color}10`}}>
@@ -3089,7 +3142,7 @@ export default function EditorPage() {
                       if (existingIdx !== -1) {
                         updatedKfs[prop][existingIdx] = { ...updatedKfs[prop][existingIdx], value: newVal };
                       } else {
-                        updatedKfs[prop] = [...updatedKfs[prop], { id: Date.now(), time: relTime, value: newVal, interpolation: 'linear' }].sort((a,b) => a.time - b.time);
+                        updatedKfs[prop] = [...updatedKfs[prop], { id: Date.now(), time: relTime, value: newVal, interpolation: 'linear' as const }].sort((a,b) => a.time - b.time);
                       }
                       // remove from top-level changes so we don't update static val if keyframed
                       delete (nextChanges as any)[prop];
