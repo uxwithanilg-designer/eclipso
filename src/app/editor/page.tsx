@@ -15,7 +15,8 @@ type Interpolation = 'linear'|'ease-in'|'ease-out';
 type Keyframe = { id:number; time:number; value:number; interpolation:Interpolation };
 type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number; url?:string; sourceOffset?:number; x?:number; y?:number; scale?:number; rotation?:number; anchorX?:number; anchorY?:number; opacity?:number; keyframes?:Record<string, Keyframe[]> };
 type Marker = { id:number; time:number; label:string; color:string };
-type HistoryEntry = { id:number; label:string; clips:Clip[]; timestamp:number };
+type Transition = { id:number; trackId:number; startTime:number; duration:number; type:string };
+type HistoryEntry = { id:number; label:string; clips:Clip[]; transitions:Transition[]; timestamp:number };
 type HistoryState = { past:HistoryEntry[]; present:HistoryEntry; future:HistoryEntry[] };
 const MAX_HISTORY = 50;
 
@@ -349,6 +350,10 @@ function PanelEffects() {
 // — TRANSITIONS PANEL —
 function PanelTransitions() {
   const cats = [...new Set(TRANSITION_LIST.map(t=>t.cat))];
+  const handleDragStart = (e: React.DragEvent, tr: typeof TRANSITION_LIST[0]) => {
+    e.dataTransfer.setData('application/transition', JSON.stringify(tr));
+    e.dataTransfer.effectAllowed = 'copy';
+  };
   return (
     <div>
       <div style={{fontSize:'10px',letterSpacing:'2px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,marginBottom:'10px'}}>VIDEO TRANSITIONS</div>
@@ -356,7 +361,10 @@ function PanelTransitions() {
         <div key={cat} style={{marginBottom:'10px'}}>
           <div style={{fontSize:'9px',letterSpacing:'1.5px',color:'var(--text-muted)',fontFamily:'Syne,sans-serif',fontWeight:700,padding:'4px 0',borderBottom:'1px solid var(--border)',marginBottom:'5px'}}>{cat.toUpperCase()}</div>
           {TRANSITION_LIST.filter(t=>t.cat===cat).map(tr=>(
-            <div key={tr.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 8px',borderRadius:'6px',cursor:'pointer',transition:'all 0.15s'}}
+            <div key={tr.name} 
+              draggable
+              onDragStart={e => handleDragStart(e, tr)}
+              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 8px',borderRadius:'6px',cursor:'grab',transition:'all 0.15s'}}
               onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';}}
               onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}
             >
@@ -1211,13 +1219,13 @@ export default function EditorPage() {
   const [tracks,setTracks]             = useState<Track[]>(initTracks);
 
   const [history, dispatch] = useReducer(
-    (state: HistoryState, action: {type:'PUSH'; label:string; clips:Clip[]} | {type:'UNDO'} | {type:'REDO'} | {type:'SET'; clips:Clip[]} | {type:'JUMP_TO'; index:number}) => {
+    (state: HistoryState, action: {type:'PUSH'; label:string; clips:Clip[]; transitions:Transition[]} | {type:'UNDO'} | {type:'REDO'} | {type:'SET'; clips?:Clip[]; transitions?:Transition[]} | {type:'JUMP_TO'; index:number}) => {
       switch (action.type) {
         case 'PUSH':
           const newPast = [...state.past, state.present].slice(-MAX_HISTORY);
           return {
             past: newPast,
-            present: { id: Date.now(), label: action.label, clips: action.clips, timestamp: Date.now() },
+            present: { id: Date.now(), label: action.label, clips: action.clips, transitions: action.transitions, timestamp: Date.now() },
             future: []
           };
         case 'UNDO':
@@ -1237,7 +1245,14 @@ export default function EditorPage() {
             future: state.future.slice(1)
           };
         case 'SET': // silent set without history
-          return { ...state, present: { ...state.present, clips: action.clips } };
+          return { 
+            ...state, 
+            present: { 
+              ...state.present, 
+              clips: action.clips ?? state.present.clips, 
+              transitions: action.transitions ?? state.present.transitions 
+            } 
+          };
         case 'JUMP_TO':
           const all = [...state.past, state.present, ...state.future];
           if (action.index < 0 || action.index >= all.length) return state;
@@ -1249,18 +1264,23 @@ export default function EditorPage() {
         default: return state;
       }
     },
-    { past: [], present: { id: Date.now(), label: 'Initial State', clips: initClips(), timestamp: Date.now() }, future: [] }
+    { past: [], present: { id: Date.now(), label: 'Initial State', clips: initClips(), transitions: [], timestamp: Date.now() }, future: [] }
   );
 
   const clips = history.present?.clips ?? [];
+  const transitions = history.present?.transitions ?? [];
+
   const setClips = useCallback((newClipsOrUpdater: Clip[] | ((prev: Clip[]) => Clip[])) => {
-    // For non-history-generating rapid updates (like dragging real-time visual feedback)
     dispatch({ type: 'SET', clips: typeof newClipsOrUpdater === 'function' ? (newClipsOrUpdater as (prev: Clip[]) => Clip[])(clips) : newClipsOrUpdater });
   }, [clips]);
 
-  const applyAction = useCallback((label: string, newClips: Clip[]) => {
-    dispatch({ type: 'PUSH', label, clips: newClips });
-  }, []);
+  const setTransitions = useCallback((newTransitionsOrUpdater: Transition[] | ((prev: Transition[]) => Transition[])) => {
+    dispatch({ type: 'SET', transitions: typeof newTransitionsOrUpdater === 'function' ? (newTransitionsOrUpdater as (prev: Transition[]) => Transition[])(transitions) : newTransitionsOrUpdater });
+  }, [transitions]);
+
+  const applyAction = useCallback((label: string, newClips: Clip[], newTransitions?: Transition[]) => {
+    dispatch({ type: 'PUSH', label, clips: newClips, transitions: newTransitions ?? transitions });
+  }, [transitions]);
 
   const undo = useCallback(() => dispatch({ type: 'UNDO' }), []);
   const redo = useCallback(() => dispatch({ type: 'REDO' }), []);
@@ -1379,6 +1399,24 @@ export default function EditorPage() {
             e.preventDefault();
             setSelectedClipIds(stateRef.current.clips.map(c => c.id));
             notify('Selected all clips');
+         }
+         else if((e.shiftKey && (e.key==='d'||e.key==='D')) || ((e.ctrlKey||e.metaKey) && (e.key==='d'||e.key==='D'))){
+            e.preventDefault();
+            const { clips: curClips, selectedClipIds: curSels } = stateRef.current;
+            if (curSels.length === 2) {
+               const c1 = curClips.find(c => c.id === curSels[0]);
+               const c2 = curClips.find(c => c.id === curSels[1]);
+               if (c1 && c2 && c1.trackId === c2.trackId) {
+                  const ordered = [c1, c2].sort((a,b) => a.start - b.start);
+                  const gap = ordered[1].start - (ordered[0].start + ordered[0].width);
+                  if (Math.abs(gap) < 5) {
+                     const startTime = ordered[1].start - 7.5;
+                     const newTr: Transition = { id: Date.now(), trackId: c1.trackId, startTime, duration: 15, type: 'Cross Dissolve' };
+                     applyAction('Apply Cross Dissolve', curClips, [...transitions, newTr]);
+                     notify('Cross Dissolve applied (Shift+D)');
+                  }
+               }
+            }
          }
       }
     };
@@ -1659,6 +1697,41 @@ export default function EditorPage() {
   const handleDrop = (e:React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOverTrackId(null);
+
+    // Check for transition drop
+    const trData = e.dataTransfer.getData('application/transition');
+    if (trData) {
+       try {
+          const tr = JSON.parse(trData);
+          const r=tlRef.current!.getBoundingClientRect();
+          const finalStart=Math.max(0, Math.round(((e.clientX-r.left)/r.width)*100/(zoom*0.14)));
+          const areaRect=tracksAreaRef.current!.getBoundingClientRect();
+          let relY=e.clientY-areaRect.top;
+          let targetTrack:Track|null=null;
+          for(const t of tracks){ if(relY<t.height){ targetTrack=t; break; } relY-=t.height; }
+          if (targetTrack && targetTrack.type === 'video') {
+             const trackClips = stateRef.current.clips.filter(c => c.trackId === targetTrack!.id).sort((a,b) => a.start - b.start);
+             let finalStartTime = finalStart - 7.5;
+             
+             // Snap to edit points if near
+             const nearEdge = trackClips.find(c => Math.abs(c.start - finalStart) < 10 || Math.abs((c.start + c.width) - finalStart) < 10);
+             if (nearEdge) {
+                if (Math.abs(nearEdge.start - finalStart) < 10) {
+                   // Drop at start of clip
+                   finalStartTime = nearEdge.start - 7.5;
+                } else {
+                   // Drop at end of clip
+                   finalStartTime = (nearEdge.start + nearEdge.width) - 7.5;
+                }
+             }
+
+             const newTr: Transition = { id: Date.now(), trackId: targetTrack.id, startTime: finalStartTime, duration: 15, type: tr.name };
+             applyAction(`Add ${tr.name}`, clips, [...transitions, newTr]);
+             notify(`${tr.name} added at edit point`);
+             return;
+          }
+       } catch(e){}
+    }
 
     // 1. Try ref first (most reliable, avoids stale state)
     // 2. Fall back to dataTransfer JSON
@@ -2146,8 +2219,71 @@ export default function EditorPage() {
                 <div style={{position:'absolute',inset:0,background:'linear-gradient(135deg,#0a0020,#000510,#050005)'}}/>
                 {(() => {
                    const playheadUnits = playheadPos / (zoom * 0.14);
-                   const activeVidClip = clips.filter(c => c.type === 'video' && c.url && playheadUnits >= c.start && playheadUnits < c.start + c.width)
-                      .sort((a,b) => b.trackId - a.trackId)[0];
+                   
+                   // Check for transition
+                   const activeTr = transitions.find(t => playheadUnits >= t.startTime && playheadUnits < t.startTime + t.duration);
+                   
+                   const activeVidClips = clips.filter(c => c.type === 'video' && c.url && playheadUnits >= c.start - 30 && playheadUnits < c.start + c.width + 30)
+                      .sort((a,b) => b.trackId - a.trackId);
+                   
+                   const activeVidClip = activeVidClips.find(c => playheadUnits >= c.start && playheadUnits < c.start + c.width);
+
+                   if (activeTr) {
+                      const tClips = clips.filter(c => c.trackId === activeTr.trackId && c.type === 'video').sort((a,b) => a.start - b.start);
+                      const clipA = tClips.find(c => activeTr.startTime > c.start && activeTr.startTime < c.start + c.width + 5);
+                      const clipB = tClips.find(c => activeTr.startTime + activeTr.duration > c.start && activeTr.startTime + activeTr.duration < c.start + c.width + 5);
+                      
+                      const progress = (playheadUnits - activeTr.startTime) / activeTr.duration;
+                      const cvA = clipA ? (prop: string) => getClipValue(clipA, prop, playheadUnits) : null;
+                      const cvB = clipB ? (prop: string) => getClipValue(clipB, prop, playheadUnits) : null;
+
+                      if (activeTr.type === 'Cross Dissolve' && clipA && clipB) {
+                         return (
+                            <div style={{width:'100%', height:'100%', position:'relative'}}>
+                               <video src={clipA.url} muted style={{
+                                  position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                  transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
+                                  opacity: (cvA!('opacity') / 100) * (1 - progress), zIndex: 2
+                               }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipA.start + (clipA.sourceOffset||0))/15; }} />
+                               <video src={clipB.url} muted style={{
+                                  position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                  transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
+                                  opacity: (cvB!('opacity') / 100) * progress, zIndex: 3
+                               }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipB.start + (clipB.sourceOffset||0))/15; }} />
+                            </div>
+                         );
+                      } else if (activeTr.type === 'Dip to Black' || activeTr.type === 'Dip to White') {
+                         const dipColor = activeTr.type === 'Dip to Black' ? '#000' : '#fff';
+                         // Smooth sine easing for dip
+                         const dipProgress = Math.sin(progress * Math.PI); // 0 -> 1 -> 0
+                         const opA = progress < 0.5 ? 1 - Math.sin(progress * Math.PI) : 0;
+                         const opB = progress >= 0.5 ? 1 - Math.sin((1 - progress) * Math.PI) : 0;
+                         
+                         // Standard linear for safety if sine feels too fast
+                         const linearOpA = progress < 0.5 ? 1 - (progress * 2) : 0;
+                         const linearOpB = progress >= 0.5 ? (progress - 0.5) * 2 : 0;
+
+                         return (
+                            <div style={{width:'100%', height:'100%', position:'relative', background: dipColor}}>
+                               {clipA && (
+                                  <video src={clipA.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
+                                     opacity: (cvA!('opacity') / 100) * linearOpA, zIndex: 2
+                                  }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipA.start + (clipA.sourceOffset||0))/15; }} />
+                               )}
+                               {clipB && (
+                                  <video src={clipB.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
+                                     opacity: (cvB!('opacity') / 100) * linearOpB, zIndex: 3
+                                  }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipB.start + (clipB.sourceOffset||0))/15; }} />
+                               )}
+                            </div>
+                         );
+                      }
+                   }
+
                    if (activeVidClip) {
                       const cv = (prop: string) => getClipValue(activeVidClip, prop, playheadUnits);
                       return (
@@ -2401,6 +2537,63 @@ export default function EditorPage() {
                            <span style={{fontSize:'8px',color:dragNewState.color,fontFamily:'Syne,sans-serif',fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{dragNewState.label}</span>
                         </div>
                       )}
+
+                      {/* Transitions */}
+                      {transitions.filter(t=>t.trackId===track.id).map(tr=>(
+                        <div key={tr.id}
+                          style={{
+                            position:'absolute',
+                            left:`${tr.startTime*zoom*0.14}%`,
+                            width:`${tr.duration*zoom*0.14}%`,
+                            top: '15%', bottom: '15%',
+                            background: tr.type === 'Dip to Black' 
+                               ? 'linear-gradient(to right, #333, #000, #333)'
+                               : tr.type === 'Dip to White'
+                               ? 'linear-gradient(to right, #ccc, #fff, #ccc)'
+                               : 'repeating-linear-gradient(45deg, rgba(124,92,255,0.3), rgba(124,92,255,0.3) 5px, rgba(124,92,255,0.5) 5px, rgba(124,92,255,0.5) 10px)',
+                            border: `1px solid ${tr.type==='Dip to White'?'#999':'var(--accent)'}`,
+                            borderRadius: '4px',
+                            zIndex: 15,
+                            cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            overflow: 'hidden'
+                          }}
+                          onContextMenu={e => {
+                             e.preventDefault(); e.stopPropagation();
+                             const options = ['Center on Cut', 'Start at Cut', 'End at Cut', 'Set as Default'];
+                             notify(`Alignment: ${options[0]} (simulated)`);
+                          }}
+                        >
+                           <span style={{fontSize:'7px', color:tr.type==='Dip to White'?'#333':'white', fontWeight:800, textTransform:'uppercase', pointerEvents:'none'}}>{tr.type}</span>
+                           {/* Left handle */}
+                           <div onMouseDown={e => {
+                              e.stopPropagation();
+                              const startX = e.clientX;
+                              const startDur = tr.duration;
+                              const startPos = tr.startTime;
+                              const move = (ev: MouseEvent) => {
+                                 const dx = ev.clientX - startX;
+                                 const delta = Math.round((dx/tlRef.current!.getBoundingClientRect().width)*100/(zoom*0.14));
+                                 setTransitions(prev => prev.map(t => t.id === tr.id ? { ...t, startTime: startPos + delta, duration: Math.max(5, startDur - delta) } : t));
+                              };
+                              const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+                              window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+                           }} style={{position:'absolute', left:0, top:0, bottom:0, width:'5px', cursor:'ew-resize'}} />
+                           {/* Duration drag handles (Right) */}
+                           <div onMouseDown={e => {
+                              e.stopPropagation();
+                              const startX = e.clientX;
+                              const startDur = tr.duration;
+                              const move = (ev: MouseEvent) => {
+                                 const dx = ev.clientX - startX;
+                                 const delta = Math.round((dx/tlRef.current!.getBoundingClientRect().width)*100/(zoom*0.14));
+                                 setTransitions(prev => prev.map(t => t.id === tr.id ? { ...t, duration: Math.max(5, startDur + delta) } : t));
+                              };
+                              const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+                              window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+                           }} style={{position:'absolute', right:0, top:0, bottom:0, width:'5px', cursor:'ew-resize'}} />
+                        </div>
+                      ))}
 
                       {/* Clips on this track */}
                       {clips.filter(c=>c.trackId===track.id).map(clip=>{
