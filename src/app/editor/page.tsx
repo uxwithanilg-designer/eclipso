@@ -15,7 +15,7 @@ type Interpolation = 'linear'|'ease-in'|'ease-out';
 type Keyframe = { id:number; time:number; value:number; interpolation:Interpolation };
 type Clip  = { id:number; trackId:number; start:number; width:number; sourceWidth?:number; label:string; color:string; type:'video'|'audio'; speed?:number; proxy?:boolean; nested?:boolean; groupId?:number; url?:string; sourceOffset?:number; x?:number; y?:number; scale?:number; rotation?:number; anchorX?:number; anchorY?:number; opacity?:number; keyframes?:Record<string, Keyframe[]> };
 type Marker = { id:number; time:number; label:string; color:string };
-type Transition = { id:number; trackId:number; startTime:number; duration:number; type:string };
+type Transition = { id:number; trackId:number; startTime:number; duration:number; type:string; reversed?:boolean };
 type HistoryEntry = { id:number; label:string; clips:Clip[]; transitions:Transition[]; timestamp:number };
 type HistoryState = { past:HistoryEntry[]; present:HistoryEntry; future:HistoryEntry[] };
 const MAX_HISTORY = 50;
@@ -99,6 +99,7 @@ const TRANSITION_LIST = [
   {name:'Film Dissolve',     cat:'Dissolve',   key:''},
   {name:'Wipe Left→Right',   cat:'Wipe',       key:''},
   {name:'Wipe Right→Left',   cat:'Wipe',       key:''},
+  {name:'Wipe Top→Bottom',   cat:'Wipe',       key:''},
   {name:'Clock Wipe',        cat:'Wipe',       key:''},
   {name:'Slide Left',        cat:'Slide',      key:''},
   {name:'Slide Right',       cat:'Slide',      key:''},
@@ -350,6 +351,7 @@ function PanelEffects() {
 // — TRANSITIONS PANEL —
 function PanelTransitions() {
   const cats = [...new Set(TRANSITION_LIST.map(t=>t.cat))];
+  const [hovered, setHovered] = useState<string|null>(null);
   const handleDragStart = (e: React.DragEvent, tr: typeof TRANSITION_LIST[0]) => {
     e.dataTransfer.setData('application/transition', JSON.stringify(tr));
     e.dataTransfer.effectAllowed = 'copy';
@@ -364,16 +366,43 @@ function PanelTransitions() {
             <div key={tr.name} 
               draggable
               onDragStart={e => handleDragStart(e, tr)}
-              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'5px 8px',borderRadius:'6px',cursor:'grab',transition:'all 0.15s'}}
-              onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)';}}
-              onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}
+              style={{display:'flex',alignItems:'center',gap:'8px',padding:'5px 8px',borderRadius:'6px',cursor:'grab',transition:'all 0.15s',position:'relative'}}
+              onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-hover)'; setHovered(tr.name);}}
+              onMouseLeave={e=>{e.currentTarget.style.background='transparent'; setHovered(null);}}
             >
-              <span style={{fontSize:'11px',color:'var(--text-secondary)'}}>{tr.name}</span>
+              <div style={{width:'32px', height:'20px', background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:'3px', overflow:'hidden', position:'relative', flexShrink:0}}>
+                {/* Minimalist animated preview */}
+                <div style={{
+                  position:'absolute', inset:0, background:'var(--accent-dim)', opacity:0.3,
+                  animation: hovered === tr.name ? 'preview-bg 2s infinite' : 'none'
+                }} />
+                <div style={{
+                  position:'absolute', bottom:0, width:'100%', background:'var(--accent)',
+                  left: tr.name.includes('Right→Left') || tr.name === 'Slide Left' ? '100%' : tr.name.includes('Left→Right') || tr.name === 'Slide Right' ? '-100%' : tr.name.includes('Top→Bottom') ? '0' : '0',
+                  top: tr.name.includes('Top→Bottom') ? '-100%' : '0',
+                  transform: hovered === tr.name ? (
+                    tr.name.includes('Left→Right') || tr.name === 'Slide Right' ? 'translateX(100%)' :
+                    tr.name.includes('Right→Left') || tr.name === 'Slide Left' ? 'translateX(-100%)' :
+                    tr.name.includes('Top→Bottom') ? 'translateY(100%)' :
+                    tr.name.includes('Dissolve') ? 'scale(1)' : 'none'
+                  ) : 'none',
+                  opacity: tr.name.includes('Dissolve') ? (hovered === tr.name ? 1 : 0) : 1,
+                  transition: hovered === tr.name ? 'all 1s ease-in-out' : 'none'
+                }} />
+              </div>
+              <span style={{fontSize:'11px',color:'var(--text-secondary)',flex:1}}>{tr.name}</span>
               {tr.key && <span style={{fontSize:'9px',color:'var(--text-muted)',fontFamily:'monospace',background:'var(--bg-card)',padding:'1px 5px',borderRadius:'3px',border:'1px solid var(--border)'}}>{tr.key}</span>}
             </div>
           ))}
         </div>
       ))}
+      <style jsx global>{`
+        @keyframes preview-bg {
+          0% { opacity: 0.1; }
+          50% { opacity: 0.4; }
+          100% { opacity: 0.1; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -1319,7 +1348,7 @@ export default function EditorPage() {
   const [sourceOutPct, setSourceOutPct]   = useState(100);
 
   const [dragState, setDragState]       = useState<{clipId:number;startX:number;clipOffsets:Record<number, {start:number, trackId:number}>}|null>(null);
-  const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
+  const [dragNewState, setDragNewState] = useState<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number, sourceWidth?:number}|null>(null);
   const [dragNewPos, setDragNewPos]     = useState<{trackId:number, start:number}|null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<number|null>(null);
   const [edgeDragState, setEdgeDragState] = useState<{clipId:number, edge:'left'|'right', startX:number, initialStart:number, initialWidth:number, sourceWidth:number}|null>(null);
@@ -1329,7 +1358,7 @@ export default function EditorPage() {
   const tracksAreaRef   = useRef<HTMLDivElement>(null);
   const dragMovedRef    = useRef(false);
   // Ref to store drag item data — bypasses React stale closure in drag event handlers
-  const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number}|null>(null);
+  const dragNewItemRef  = useRef<{type:'video'|'audio', label:string, color:string, duration?:number, url?:string, sourceOffset?:number, sourceWidth?:number}|null>(null);
 
   const stateRef = useRef<{clips:Clip[], selectedClipIds:number[], selectedKeyframe: { clipId: number, prop: string, kfId: number } | null}>({ clips, selectedClipIds, selectedKeyframe });
   useEffect(() => { stateRef.current = { clips, selectedClipIds, selectedKeyframe }; }, [clips, selectedClipIds, selectedKeyframe]);
@@ -1542,60 +1571,64 @@ export default function EditorPage() {
     setSourceIsPlaying(false);
   };
   const handleSourceInsert = (mode: 'insert' | 'overwrite') => {
-      if (!sourceClip) return;
-      
-      const inP = Math.min(sourceInPct, sourceOutPct);
-      const outP = Math.max(sourceInPct, sourceOutPct);
-      const widthUnits = Math.max(1, Math.round((outP - inP) / 100 * sourceClip.duration));
-      
-      const targetTrackId = sourceClip.type === 'video' ? 3 : 5;
-      const insertStart = Math.round(playheadPos / (zoom * 0.14));
-      
-      let newClips = [...clips];
-      if (mode === 'insert') {
-         // Push existing clips forward on the target track
-         newClips = newClips.map(c => {
-            if (c.trackId === targetTrackId && c.start >= insertStart) {
-               return { ...c, start: c.start + widthUnits };
-            }
-            return c;
-         });
-      } else {
-         // Overwrite: remove parts of clips that overlap
-         newClips = newClips.filter(c => {
-            if (c.trackId !== targetTrackId) return true;
-            if (c.start >= insertStart && c.start + c.width <= insertStart + widthUnits) return false;
-            return true;
-         }).map(c => {
-            if (c.trackId === targetTrackId) {
-               if (c.start < insertStart && c.start + c.width > insertStart) {
-                  return { ...c, width: insertStart - c.start };
-               }
-               if (c.start >= insertStart && c.start < insertStart + widthUnits) {
-                   const diff = (insertStart + widthUnits) - c.start;
-                   return { ...c, start: c.start + diff, width: Math.max(0, c.width - diff) };
-               }
-            }
-            return c;
-         }).filter(c => c.width > 0);
-      }
-      
-      const newClip: Clip = {
-         id: Date.now(),
-         trackId: targetTrackId,
-         start: insertStart,
-         width: widthUnits,
-         label: sourceClip.label,
-         color: sourceClip.color,
-         type: sourceClip.type,
-         sourceWidth: sourceClip.duration,
-         url: sourceClip.url,
-         sourceOffset: Math.min(sourceInPct, sourceOutPct) / 100 * sourceClip.duration
-      };
-      
-      const nextClips = [...newClips, newClip];
-      applyAction(`Source ${mode} "${sourceClip.label}"`, nextClips);
-      notify(`Source ${mode} completed`);
+     if (!sourceClip) return;
+
+     const inP = Math.min(sourceInPct, sourceOutPct);
+     const outP = Math.max(sourceInPct, sourceOutPct);
+     const widthUnits = Math.max(1, Math.round((outP - inP) / 100 * sourceClip.duration));
+
+     const videoTrackId = 3; // Correct V1 ID
+     const audioTrackId = 4; // Correct A1 ID
+     const insertStart = Math.round(playheadPos / (zoom * 0.14));
+     
+     // Convert duration to units (assuming 15 units = 1 second)
+     const durationUnits = Math.max(1, Math.round((outP - inP) / 100 * sourceClip.duration * 15));
+
+     let nextClips = [...clips];
+
+     if (mode === 'insert') {
+        nextClips = nextClips.map(c => {
+           if (c.start >= insertStart) {
+              return { ...c, start: c.start + durationUnits };
+           }
+           return c;
+        });
+     } else {
+        // Overwrite overlaps on both tracks
+        nextClips = nextClips.filter(c => {
+           const ends = c.start + c.width;
+           const isOverlapping = (c.trackId === videoTrackId || c.trackId === audioTrackId) && 
+                                ((c.start >= insertStart && c.start < insertStart + durationUnits) || 
+                                 (ends > insertStart && ends <= insertStart + durationUnits) ||
+                                 (c.start < insertStart && ends > insertStart + durationUnits));
+           return !isOverlapping;
+        });
+     }
+
+     const gid = Date.now();
+     const videoClip: Clip = {
+        id: gid,
+        trackId: videoTrackId,
+        start: insertStart,
+        width: durationUnits,
+        label: sourceClip.label,
+        color: sourceClip.color,
+        type: 'video',
+        url: sourceClip.url,
+        sourceOffset: (inP / 100 * sourceClip.duration) * 15,
+        sourceWidth: sourceClip.duration * 15,
+        groupId: gid
+     };
+
+     const audioClip: Clip = {
+        ...videoClip,
+        id: gid + 1,
+        trackId: audioTrackId,
+        type: 'audio',
+        color: '#00E5FF'
+     };
+     applyAction(`${mode==='insert'?'Insert':'Overwrite'} "${sourceClip.label}"`, [...nextClips, videoClip, audioClip]);
+     notify(`"${sourceClip.label}" ${mode}ed to timeline`);
   };
 
   const handleTLClick=(e:React.MouseEvent<HTMLDivElement>)=>{
@@ -1633,16 +1666,34 @@ export default function EditorPage() {
     const r=tlRef.current.getBoundingClientRect();
     const pct=((e.clientX-r.left)/r.width)*100;
     const splitUnit=Math.round(pct/(zoom*0.14));
-    if(splitUnit<=clip.start||splitUnit>=(clip.start+clip.width)) return;
-    const id1=Date.now(), id2=id1+1;
-    const left:Clip ={...clip,id:id1,width:splitUnit-clip.start};
-    const right:Clip={...clip,id:id2,start:splitUnit,width:(clip.start+clip.width)-splitUnit};
-    const nextClips = clips.filter(c=>c.id!==clip.id).concat([left,right]);
-    applyAction(`Cut clip "${clip.label}"`, nextClips);
+
+    // Find all clips that should be split (if linked)
+    const clipsToSplit = clip.groupId 
+       ? clips.filter(c => c.groupId === clip.groupId && splitUnit > c.start && splitUnit < c.start + c.width)
+       : [clip];
+
+    if (clipsToSplit.length === 0) return;
+
+    let nextClips = [...clips];
+    const newIds: number[] = [];
+    const leftGid = Date.now();
+    const rightGid = leftGid + 2;
+
+    clipsToSplit.forEach((c, idx) => {
+       const id1 = leftGid + idx, id2 = rightGid + idx;
+       const splitRelative = splitUnit - c.start;
+       const left: Clip = { ...c, id: id1, width: splitRelative, groupId: c.groupId ? leftGid : undefined };
+       const right: Clip = { ...c, id: id2, start: splitUnit, width: (c.start + c.width) - splitUnit, sourceOffset: (c.sourceOffset || 0) + splitRelative, groupId: c.groupId ? rightGid : undefined };
+
+       nextClips = nextClips.filter(x => x.id !== c.id).concat([left, right]);
+       newIds.push(id1);
+    });
+    applyAction(`Split ${clipsToSplit.length} clip(s)`, nextClips);
     setActiveTool('select');
-    setSelectedClipIds([id1]);
-    notify('✂ Clip split · Ctrl+Z to undo');
+    setSelectedClipIds(newIds);
+    notify(`✂ ${clipsToSplit.length} Clip(s) split`);
   };
+
 
   // ── DRAG: global mouse-up ends clip drag ──
   useEffect(()=>{
@@ -1750,7 +1801,6 @@ export default function EditorPage() {
     // Re-calculate exactly where we dropped (bypassing any mouseup race condition erasures)
     const r=tlRef.current.getBoundingClientRect();
     const pct=((e.clientX-r.left)/r.width)*100;
-    const finalStart=Math.max(0, Math.round(pct/(zoom*0.14)));
 
     const areaRect=tracksAreaRef.current.getBoundingClientRect();
     let relY=e.clientY-areaRect.top;
@@ -1761,6 +1811,42 @@ export default function EditorPage() {
     }
 
     if (!targetTrack || targetTrack.type === 'caption') {
+       setDragNewState(null);
+       setDragNewPos(null);
+       return;
+    }
+
+    const finalStart=Math.max(0, Math.round(pct/(zoom*0.14)));
+    const durationUnits = (state.duration || 10) * 15; // default 10s if not set, scaled by 15fps
+
+    // Auto-split Video and Audio if file has both (default behavior like Premiere)
+    if (state.type === 'video' && targetTrack.type === 'video') {
+       const videoTrackId = 3; // Correct V1 ID
+       const audioTrackId = 4; // Correct A1 ID
+       const gid = Date.now();
+       
+       const videoClip: Clip = {
+          id: gid,
+          trackId: videoTrackId,
+          start: finalStart,
+          width: durationUnits,
+          label: state.label,
+          color: state.color,
+          type: 'video',
+          url: state.url,
+          sourceOffset: (state.sourceOffset || 0) * 15,
+          sourceWidth: (state.sourceWidth || state.duration || 10) * 15,
+          groupId: gid
+       };
+       
+       const audioClip: Clip = {
+          ...videoClip,
+          id: gid + 1,
+          trackId: audioTrackId,
+          type: 'audio',
+          color: '#00E5FF' 
+       };
+       applyAction(`Add "${state.label}" (V+A)`, [...clips, videoClip, audioClip]);
        setDragNewState(null);
        setDragNewPos(null);
        return;
@@ -1778,17 +1864,15 @@ export default function EditorPage() {
        finalTrackId = fallback.id;
     }
     
-    const w = state.duration || 100; // default duration
-    
     // Check overlap
     const overlaps = clips.filter(c => c.trackId === finalTrackId && 
                                   ((finalStart >= c.start && finalStart < c.start + c.width) ||
-                                   (c.start >= finalStart && c.start < finalStart + w) ||
-                                   (finalStart <= c.start && finalStart + w >= c.start + c.width)));
+                                   (c.start >= finalStart && c.start < finalStart + durationUnits) ||
+                                   (finalStart <= c.start && finalStart + durationUnits >= c.start + c.width)));
     let newClips = [...clips];
     if (overlaps.length > 0) {
        // Ripple push later clips
-       const pushAmount = w;
+       const pushAmount = durationUnits;
        newClips = newClips.map(c => 
          (c.trackId === finalTrackId && c.start + c.width/2 >= finalStart) 
             ? { ...c, start: c.start + pushAmount } 
@@ -1800,12 +1884,13 @@ export default function EditorPage() {
        id: Date.now(),
        trackId: finalTrackId,
        start: finalStart,
-       width: w,
+       width: durationUnits,
        label: state.label,
        color: state.color,
        type: state.type as 'video'|'audio',
        url: state.url,
-       sourceOffset: state.sourceOffset || 0
+       sourceOffset: (state.sourceOffset || 0) * 15,
+       sourceWidth: (state.sourceWidth || state.duration || 10) * 15
     };
 
     const nextClips = [...newClips, newClip];
@@ -1954,17 +2039,17 @@ export default function EditorPage() {
             const initial = dragState.clipOffsets[c.id];
             let newStart = Math.max(0, initial.start + deltaUnits);
             let newTrackId = initial.trackId + trackDelta;
-            
             // Ensure track exists and is valid type
             const tt = tracks.find(t => t.id === newTrackId);
             if (!tt || tt.type !== c.type) {
                newTrackId = initial.trackId;
             }
-            
+
             return { ...c, start: newStart, trackId: newTrackId };
          }
          return c;
       }));
+      setDragOverTrackId(targetTrack?.id || null);
       dragMovedRef.current=true;
       return;
     }
@@ -2223,96 +2308,169 @@ export default function EditorPage() {
                    // Check for transition
                    const activeTr = transitions.find(t => playheadUnits >= t.startTime && playheadUnits < t.startTime + t.duration);
                    
-                   const activeVidClips = clips.filter(c => c.type === 'video' && c.url && playheadUnits >= c.start - 30 && playheadUnits < c.start + c.width + 30)
+                   const activeVidClips = clips.filter(c => c.type === 'video' && c.url && playheadUnits >= c.start - 5 && playheadUnits < c.start + c.width + 5)
                       .sort((a,b) => b.trackId - a.trackId);
-                   
-                   const activeVidClip = activeVidClips.find(c => playheadUnits >= c.start && playheadUnits < c.start + c.width);
+
+                   const activeAudClips = clips.filter(c => c.type === 'audio' && c.url && playheadUnits >= c.start && playheadUnits < c.start + c.width);
 
                    if (activeTr) {
                       const tClips = clips.filter(c => c.trackId === activeTr.trackId && c.type === 'video').sort((a,b) => a.start - b.start);
                       const clipA = tClips.find(c => activeTr.startTime > c.start && activeTr.startTime < c.start + c.width + 5);
                       const clipB = tClips.find(c => activeTr.startTime + activeTr.duration > c.start && activeTr.startTime + activeTr.duration < c.start + c.width + 5);
-                      
-                      const progress = (playheadUnits - activeTr.startTime) / activeTr.duration;
+
+                      const progress = Math.max(0, Math.min(1, (playheadUnits - activeTr.startTime) / activeTr.duration));
                       const cvA = clipA ? (prop: string) => getClipValue(clipA, prop, playheadUnits) : null;
                       const cvB = clipB ? (prop: string) => getClipValue(clipB, prop, playheadUnits) : null;
 
-                      if (activeTr.type === 'Cross Dissolve' && clipA && clipB) {
-                         return (
-                            <div style={{width:'100%', height:'100%', position:'relative'}}>
-                               <video src={clipA.url} muted style={{
-                                  position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
-                                  transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
-                                  opacity: (cvA!('opacity') / 100) * (1 - progress), zIndex: 2
-                               }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipA.start + (clipA.sourceOffset||0))/15; }} />
-                               <video src={clipB.url} muted style={{
-                                  position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
-                                  transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
-                                  opacity: (cvB!('opacity') / 100) * progress, zIndex: 3
-                               }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipB.start + (clipB.sourceOffset||0))/15; }} />
-                            </div>
-                         );
-                      } else if (activeTr.type === 'Dip to Black' || activeTr.type === 'Dip to White') {
-                         const dipColor = activeTr.type === 'Dip to Black' ? '#000' : '#fff';
-                         // Smooth sine easing for dip
-                         const dipProgress = Math.sin(progress * Math.PI); // 0 -> 1 -> 0
-                         const opA = progress < 0.5 ? 1 - Math.sin(progress * Math.PI) : 0;
-                         const opB = progress >= 0.5 ? 1 - Math.sin((1 - progress) * Math.PI) : 0;
-                         
-                         // Standard linear for safety if sine feels too fast
-                         const linearOpA = progress < 0.5 ? 1 - (progress * 2) : 0;
-                         const linearOpB = progress >= 0.5 ? (progress - 0.5) * 2 : 0;
+                      if (clipA && clipB) {
+                         const timeA = (playheadUnits - clipA.start + (clipA.sourceOffset||0))/15;
+                         const timeB = (playheadUnits - clipB.start + (clipB.sourceOffset||0))/15;
 
-                         return (
-                            <div style={{width:'100%', height:'100%', position:'relative', background: dipColor}}>
-                               {clipA && (
+                         if (activeTr.type.includes('Dissolve')) {
+                            return (
+                               <div style={{width:'100%', height:'100%', position:'relative'}}>
+                                  <video src={clipA.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
+                                     opacity: (cvA!('opacity') / 100) * (1 - progress), zIndex: 2
+                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  <video src={clipB.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
+                                     opacity: (cvB!('opacity') / 100) * progress, zIndex: 3
+                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                               </div>
+                            );
+                         } else if (activeTr.type === 'Dip to Black' || activeTr.type === 'Dip to White') {
+                            const dipColor = activeTr.type === 'Dip to Black' ? '#000' : '#fff';
+                            const linearOpA = progress < 0.5 ? 1 - (progress * 2) : 0;
+                            const linearOpB = progress >= 0.5 ? (progress - 0.5) * 2 : 0;
+                            return (
+                               <div style={{width:'100%', height:'100%', position:'relative', background: dipColor}}>
                                   <video src={clipA.url} muted style={{
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
                                      opacity: (cvA!('opacity') / 100) * linearOpA, zIndex: 2
-                                  }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipA.start + (clipA.sourceOffset||0))/15; }} />
-                               )}
-                               {clipB && (
+                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
                                   <video src={clipB.url} muted style={{
                                      position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
                                      transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
                                      opacity: (cvB!('opacity') / 100) * linearOpB, zIndex: 3
-                                  }} ref={el => { if(el && !isPlaying) el.currentTime = (playheadUnits - clipB.start + (clipB.sourceOffset||0))/15; }} />
-                               )}
-                            </div>
-                         );
+                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                               </div>
+                            );
+                         } else if (activeTr.type.startsWith('Wipe')) {
+                            const actualProgress = activeTr.reversed ? 1 - progress : progress;
+                            let clipPath = 'inset(0 0 0 0)';
+                            if (activeTr.type.includes('Left→Right')) clipPath = `inset(0 ${100 - actualProgress * 100}% 0 0)`;
+                            if (activeTr.type.includes('Right→Left')) clipPath = `inset(0 0 0 ${100 - actualProgress * 100}%)`;
+                            if (activeTr.type.includes('Top→Bottom')) clipPath = `inset(0 0 ${100 - actualProgress * 100}% 0)`;
+                            return (
+                               <div style={{width:'100%', height:'100%', position:'relative'}}>
+                                  <video src={clipA.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
+                                     opacity: cvA!('opacity') / 100, zIndex: 2
+                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  <video src={clipB.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg)`,
+                                     opacity: cvB!('opacity') / 100, zIndex: 3, clipPath: clipPath, WebkitClipPath: clipPath
+                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                               </div>
+                            );
+                         } else if (activeTr.type.startsWith('Slide')) {
+                            const actualProgress = activeTr.reversed ? 1 - progress : progress;
+                            let transformB = 'none';
+                            if (activeTr.type.includes('Left')) transformB = `translateX(${(1 - actualProgress) * 100}%)`;
+                            if (activeTr.type.includes('Right')) transformB = `translateX(${(actualProgress - 1) * 100}%)`;
+                            return (
+                               <div style={{width:'100%', height:'100%', position:'relative', overflow:'hidden'}}>
+                                  <video src={clipA.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvA!('x')}px, ${cvA!('y')}px) scale(${cvA!('scale') / 100}) rotate(${cvA!('rotation')}deg)`,
+                                     opacity: cvA!('opacity') / 100, zIndex: 2
+                                  }} ref={el => { if(el) { el.currentTime = timeA; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                                  <video src={clipB.url} muted style={{
+                                     position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain',
+                                     transform: `translate(${cvB!('x')}px, ${cvB!('y')}px) scale(${cvB!('scale') / 100}) rotate(${cvB!('rotation')}deg) ${transformB}`,
+                                     opacity: cvB!('opacity') / 100, zIndex: 3,
+                                  }} ref={el => { if(el) { el.currentTime = timeB; if(isPlaying && el.paused) el.play().catch(()=>{}); else if(!isPlaying) el.pause(); } }} />
+                               </div>
+                            );
+                         }
                       }
+
                    }
 
-                   if (activeVidClip) {
-                      const cv = (prop: string) => getClipValue(activeVidClip, prop, playheadUnits);
-                      return (
-                         <video 
-                            src={activeVidClip.url}
-                            style={{
-                              width:'100%', height:'100%', objectFit:'contain', position:'relative', zIndex:2,
-                              transform: `translate(${cv('x')}px, ${cv('y')}px) scale(${cv('scale') / 100}) rotate(${cv('rotation')}deg)`,
-                              transformOrigin: `${activeVidClip.anchorX ?? 960}px ${activeVidClip.anchorY ?? 540}px`,
-                              opacity: cv('opacity') / 100
-                            }}
-                            muted
-                            ref={(el) => {
-                               if (el) {
-                                  const localTime = (playheadUnits - activeVidClip.start) + (activeVidClip.sourceOffset || 0);
-                                  const expectedSeconds = localTime / 15;
-                                  if (Math.abs(el.currentTime - expectedSeconds) > 0.3 && !isPlaying) {
-                                     el.currentTime = expectedSeconds;
-                                  }
-                                  if (isPlaying && el.paused) {
-                                     let p = el.play();
-                                     if (p !== undefined) p.catch(()=>{});
-                                  }
-                                  if (!isPlaying && !el.paused) el.pause();
-                               }
-                            }}
-                         />
-                      );
-                   }
+                   const activeVidClip = clips.find(c => c.type === 'video' && playheadUnits >= c.start && playheadUnits < c.start + c.width);
+
+                   return (
+                     <div style={{width:'100%', height:'100%', position:'relative'}}>
+                        {activeVidClip && (() => {
+                           const cv = (prop: string) => getClipValue(activeVidClip, prop, playheadUnits);
+                           return (
+                             <video 
+                                key={activeVidClip.id}
+                                src={activeVidClip.url}
+                                style={{
+                                  width:'100%', height:'100%', objectFit:'contain', position:'relative', zIndex:2,
+                                  transform: `translate(${cv('x')}px, ${cv('y')}px) scale(${cv('scale') / 100}) rotate(${cv('rotation')}deg)`,
+                                  transformOrigin: `${activeVidClip.anchorX ?? 960}px ${activeVidClip.anchorY ?? 540}px`,
+                                  opacity: cv('opacity') / 100
+                                }}
+                                muted={(tracks.find(t=>t.id===activeVidClip.trackId)?.muted || false) || !isPlaying}
+                                ref={(el) => {
+                                   if (el) {
+                                      const localTime = (playheadUnits - activeVidClip.start) + (activeVidClip.sourceOffset || 0);
+                                      const expectedSeconds = localTime / 15;
+                                      
+                                      // Crucial: always sync if jumping or starting playback
+                                      if (Math.abs(el.currentTime - expectedSeconds) > 0.05) {
+                                         el.currentTime = expectedSeconds;
+                                      }
+                                      
+                                      if (isPlaying && el.paused) {
+                                         let p = el.play();
+                                         if (p !== undefined) p.catch(()=>{});
+                                      }
+                                      if (!isPlaying && !el.paused) el.pause();
+                                   }
+                                }}
+                             />
+                           );
+                        })()}
+                        {/* Audio tracks rendering (using invisible video for better mp4 audio support) */}
+                        {activeAudClips.map(ac => {
+                           const isMuted = tracks.find(t=>t.id===ac.trackId)?.muted || false;
+                           return (
+                             <video 
+                                key={ac.id}
+                                src={ac.url}
+                                style={{display:'none'}}
+                                muted={isMuted || !isPlaying}
+                                ref={el => {
+                                   if (el) {
+                                      const localTime = (playheadUnits - ac.start) + (ac.sourceOffset || 0);
+                                      const expectedSeconds = localTime / 15;
+                                      if (Math.abs(el.currentTime - expectedSeconds) > 0.1 && !isPlaying) {
+                                         el.currentTime = expectedSeconds;
+                                      }
+                                      if (isPlaying && el.paused) el.play().catch(()=>{});
+                                      if (!isPlaying && !el.paused) el.pause();
+                                   }
+                                }}
+                             />
+                           );
+                        })}
+                        {!activeVidClip && (
+                           <div style={{position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center'}}>
+                             <div style={{fontSize:'10px',color:'rgba(255,255,255,0.07)',fontFamily:'Syne,sans-serif',letterSpacing:'3px'}}>STRIKE THE HEAVENS</div>
+                           </div>
+                        )}
+                     </div>
+                   );
+
                    return (
                      <div style={{position:'relative',zIndex:1}}>
                        <div style={{fontSize:'10px',color:'rgba(255,255,255,0.07)',fontFamily:'Syne,sans-serif',letterSpacing:'3px'}}>STRIKE THE HEAVENS</div>
@@ -2560,11 +2718,13 @@ export default function EditorPage() {
                           }}
                           onContextMenu={e => {
                              e.preventDefault(); e.stopPropagation();
-                             const options = ['Center on Cut', 'Start at Cut', 'End at Cut', 'Set as Default'];
-                             notify(`Alignment: ${options[0]} (simulated)`);
+                             const isReversed = !tr.reversed;
+                             setTransitions(prev => prev.map(t => t.id === tr.id ? { ...t, reversed: isReversed } : t));
+                             notify(`${tr.type} ${isReversed ? 'Reversed' : 'Standard'}`);
                           }}
                         >
-                           <span style={{fontSize:'7px', color:tr.type==='Dip to White'?'#333':'white', fontWeight:800, textTransform:'uppercase', pointerEvents:'none'}}>{tr.type}</span>
+                           <span style={{fontSize:'7px', color:tr.type==='Dip to White'?'#333':'white', fontWeight:800, textTransform:'uppercase', pointerEvents:'none'}}>{tr.type}{tr.reversed ? ' (R)' : ''}</span>
+
                            {/* Left handle */}
                            <div onMouseDown={e => {
                               e.stopPropagation();
@@ -2614,15 +2774,32 @@ export default function EditorPage() {
                                     .map(c => c.id);
                               } else {
                                  newSelections = [...selectedClipIds];
-                                 if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                                 const isModifier = e.shiftKey || e.ctrlKey || e.metaKey;
+                                 if (isModifier) {
                                    if (isSelected) {
-                                     newSelections = newSelections.filter(id => id !== clip.id);
+                                     // Remove clip and its linked group
+                                     if (clip.groupId) {
+                                       const linkedIds = clips.filter(c => c.groupId === clip.groupId).map(c => c.id);
+                                       newSelections = newSelections.filter(id => !linkedIds.includes(id));
+                                     } else {
+                                       newSelections = newSelections.filter(id => id !== clip.id);
+                                     }
                                    } else {
-                                     newSelections.push(clip.id);
+                                     // Add clip and its linked group
+                                     if (clip.groupId) {
+                                       const linkedIds = clips.filter(c => c.groupId === clip.groupId).map(c => c.id);
+                                       newSelections = [...new Set([...newSelections, ...linkedIds])];
+                                     } else {
+                                       newSelections.push(clip.id);
+                                     }
                                    }
                                  } else {
                                    if (!isSelected) {
-                                     newSelections = [clip.id];
+                                     if (clip.groupId) {
+                                       newSelections = clips.filter(c => c.groupId === clip.groupId).map(c => c.id);
+                                     } else {
+                                       newSelections = [clip.id];
+                                     }
                                    }
                                  }
                               }
@@ -2643,6 +2820,20 @@ export default function EditorPage() {
                             if(dragMovedRef.current){ dragMovedRef.current=false; return; }
                             if(activeTool==='razor'){ handleRazorSplit(e,clip); }
                             else { e.stopPropagation(); }
+                          }}
+                          onContextMenu={e=>{
+                            e.preventDefault(); e.stopPropagation();
+                            if (clip.groupId) {
+                               const linkedIds = clips.filter(c => c.groupId === clip.groupId).map(c => c.id);
+                               setSelectedClipIds(linkedIds);
+                               const confirmUnlink = window.confirm('Unlink video and audio?');
+                               if (confirmUnlink) {
+                                  applyAction('Unlink clips', clips.map(c => c.groupId === clip.groupId ? { ...c, groupId: undefined } : c));
+                                  notify('Clips unlinked');
+                               }
+                            } else {
+                               notify(`Clip: ${clip.label}`);
+                            }
                           }}
                           style={{
                           position:'absolute',
@@ -2667,10 +2858,20 @@ export default function EditorPage() {
                             {clip.proxy && <span style={{fontSize:'7px',background:'#00E5FF22',border:'1px solid #00E5FF44',color:'#00E5FF',borderRadius:'2px',padding:'0 2px',flexShrink:0}}>P</span>}
                             {clip.nested && <span style={{fontSize:'7px',background:'rgba(124,92,255,0.2)',border:'1px solid rgba(124,92,255,0.4)',color:'var(--accent)',borderRadius:'2px',padding:'0 2px',flexShrink:0}}>N</span>}
                           </div>
-                          {/* Waveform body */}
+                          {/* Clip Body (Thumbnails or Waves) */}
                           {track.type!=='caption' && (
-                            <div style={{flex:1,overflow:'hidden',position:'relative'}}>
-                              <ClipWave color={clip.color} n={Math.floor(clip.width*zoom*0.25)}/>
+                            <div style={{flex:1,overflow:'hidden',position:'relative', display:'flex', alignItems:'center'}}>
+                              {clip.type === 'video' ? (
+                                <div style={{display:'flex', gap:'2px', height:'100%', opacity:0.6}}>
+                                   {Array.from({length: Math.max(1, Math.floor(clip.width*zoom*0.015))}).map((_, i) => (
+                                      <div key={i} style={{width:'40px', height:'100%', background:`linear-gradient(135deg, ${clip.color}33, ${clip.color}11)`, borderRight:'1px solid rgba(255,255,255,0.05)', display:'flex', alignItems:'center', justifyContent:'center'}}>
+                                         <span style={{fontSize:'12px', opacity:0.2}}>🎬</span>
+                                      </div>
+                                   ))}
+                                </div>
+                              ) : (
+                                <ClipWave color={clip.color} n={Math.floor(clip.width*zoom*0.25)}/>
+                              )}
                               
                               {/* Keyframes rendering */}
                               {clip.keyframes && Object.entries(clip.keyframes).map(([prop, kfs]) => (
